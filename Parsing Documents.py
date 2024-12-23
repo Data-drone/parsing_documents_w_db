@@ -11,14 +11,20 @@
 
 # COMMAND ----------
 
+#Some simple helper functions
+from helper_functions.utils import get_username_from_email
+
+# COMMAND ----------
+
 # DBTITLE 1,Set Up Configurations
 import os
 
-catalog = 'brian_ml_dev'
+user_name = get_username_from_email(dbutils = dbutils)
+catalog = f"{user_name}_parsing"
 schema = 'parsing_tests'
 volume = 'raw_data'
 
-llm_model_name = 'brian_serving_test'
+#llm_model_name = 'brian_serving_test' #TODO
 llm_model_name = 'databricks-meta-llama-3-1-70b-instruct'
 
 full_vol_path = f'/Volumes/{catalog}/{schema}/{volume}'

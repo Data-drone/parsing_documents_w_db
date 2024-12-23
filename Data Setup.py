@@ -2,14 +2,25 @@
 # MAGIC %md
 # MAGIC # Setup the data
 # MAGIC
-# MAGIC Lets look at how to parse and work with docs
+# MAGIC This notebook is focused upon some set-up for the remaining worklow.
+# MAGIC
+# MAGIC TODO:
+# MAGIC - Explain the volume creation / docs we're using
+
+# COMMAND ----------
+
+import shutil
+
+#Some simple helper functions
+from helper_functions.utils import get_username_from_email
 
 # COMMAND ----------
 
 # DBTITLE 1,Set Up Configurations
 import os
 
-catalog = 'brian_ml_dev'
+user_name = get_username_from_email(dbutils = dbutils)
+catalog = f"{user_name}_parsing"
 schema = 'parsing_tests'
 volume = 'raw_data'
 
@@ -25,6 +36,7 @@ spark.sql(f'CREATE VOLUME IF NOT EXISTS {catalog}.{schema}.{volume}')
 # DBTITLE 1,Generate Volume Path for pasting to next cell
 volume_path = os.path.join('/Volumes', catalog, schema, volume)
 volume_path
+
 # COMMAND ----------
 
 # DBTITLE 1,Copy samples into volume - doesn't work on serverless
