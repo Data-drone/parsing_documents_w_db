@@ -1,0 +1,29 @@
+common_parameters: &common_parameters
+  catalog: ${var.catalog_name}
+  schema: ${var.schema_name}
+  volume_name: ${var.volume_name}
+
+resources:
+  jobs:
+    e2e-parsing-demo:
+      name: ${bundle.target}_parsing_workflow
+      job_clusters:
+        - job_cluster_key: parsing_cluster
+          new_cluster: ${var.default_job_cluster}
+      parameters:
+      tasks:
+        - task_key: data_set_up
+          job_cluster_key: parsing_cluster
+          notebook_task:
+            notebook_path: ../../src/tasks/0_data_set_up.py
+            base_parameters:
+              <<: *common_parameters
+        - task_key: parsing
+          job_cluster_key: parsing_cluster
+          notebook_task:
+            notebook_path: ../../src/tasks/1_parsing.py
+            base_parameters:
+              <<: *common_parameters
+          depends_on:
+            - task_key: data_set_up
+        

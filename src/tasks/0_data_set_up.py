@@ -12,7 +12,7 @@
 import shutil
 
 #Some simple helper functions
-from helper_functions.utils import get_username_from_email
+from src.utils.databricks_utils import get_username_from_email
 
 # COMMAND ----------
 
@@ -21,8 +21,8 @@ import os
 
 user_name = get_username_from_email(dbutils = dbutils)
 catalog = f"{user_name}_parsing"
-schema = 'parsing_tests'
-volume = 'raw_data'
+schema = dbutils.widgets.get("schema")
+volume = dbutils.widgets.get("volume_name")
 
 # COMMAND ----------
 

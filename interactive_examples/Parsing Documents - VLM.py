@@ -12,7 +12,7 @@
 # COMMAND ----------
 
 #Some simple helper functions
-from helper_functions.utils import get_username_from_email
+from src.utils.databricks_utils import get_username_from_email
 
 # COMMAND ----------
 

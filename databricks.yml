@@ -1,0 +1,64 @@
+bundle:
+  name: powering_knowledge_driven_applications
+
+variables:
+
+  catalog_name:
+    description: The default catalog argument
+    default: development
+  
+  schema_name:
+    description: The default name of the schema
+    default: experiment
+
+  volume_name:
+    description: The default name of the reference volume
+    default: raw_data
+  
+  cluster_id:
+    description: A pre-existing cluster to use instead of spinning up new ones  
+    lookup:
+      cluster: "training_cluster_nanile" 
+  
+  email_address:
+    default: nicholas.anile@mantelgroup.com.au
+
+  default_job_cluster:
+    description: Default job cluster definition
+    type: complex
+    default:
+      spark_version: 15.4.x-cpu-ml-scala2.12 
+      autoscale:
+        min_workers: 1
+        max_workers: 4
+      aws_attributes:
+        first_on_demand: 1
+      policy_id: 
+        lookup: Job ML Cluster Policy
+      runtime_engine: STANDARD
+      node_type_id: i3.xlarge
+
+include:
+  - src/workflows/*.yml
+
+# Deployment Target specific values for workspace
+targets:
+  mg_dev:
+    mode: development
+    cluster_id: ${var.cluster_id}
+    variables: 
+      catalog_name: ${workspace.current_user.userName}_parsing
+      schema_name: knowledge_extraction
+    workspace:
+      host: XXX
+      root_path: /Users/${workspace.current_user.userName}/${bundle.name}
+
+  dbx_dev:
+    mode: development
+    cluster_id: ${var.cluster_id}
+    variables: 
+      catalog_name: ${workspace.current_user.userName}_parsing
+      schema_name: knowledge_extraction
+    workspace:
+      host: XXX
+      root_path: /Users/${workspace.current_user.userName}/${bundle.name}

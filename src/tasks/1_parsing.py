@@ -35,7 +35,7 @@ from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 from pyspark.sql import functions as F
 
 #additional helper functions
-from helper_functions.utils import get_username_from_email
+from src.utils.databricks_utils import get_username_from_email
 
 # COMMAND ----------
 
