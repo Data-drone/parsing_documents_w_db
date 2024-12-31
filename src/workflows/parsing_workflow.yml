@@ -1,7 +1,12 @@
 common_parameters: &common_parameters
-  catalog: ${var.catalog_name}
-  schema: ${var.schema_name}
+  catalog_name: ${var.catalog_name}
+  schema_name: ${var.schema_name}
   volume_name: ${var.volume_name}
+
+library_resources: &library_resources
+  libraries:
+    - pypi: 
+        package: pymupdf4llm
 
 resources:
   jobs:
@@ -10,20 +15,22 @@ resources:
       job_clusters:
         - job_cluster_key: parsing_cluster
           new_cluster: ${var.default_job_cluster}
-      parameters:
       tasks:
         - task_key: data_set_up
           job_cluster_key: parsing_cluster
           notebook_task:
-            notebook_path: ../../src/tasks/0_data_set_up.py
+            notebook_path: ../../src/tasks/data_set_up.py
             base_parameters:
+              file_path: /Users/${workspace.current_user.userName}/${bundle.name}/files/docs/
               <<: *common_parameters
         - task_key: parsing
           job_cluster_key: parsing_cluster
           notebook_task:
-            notebook_path: ../../src/tasks/1_parsing.py
+            notebook_path: ../../src/tasks/parsing_w_pdfs/parsing_to_markdown.py
             base_parameters:
+              file_path: /Users/${workspace.current_user.userName}/${bundle.name}/files/src/utils/common_functions.py
               <<: *common_parameters
+          <<: *library_resources
           depends_on:
             - task_key: data_set_up
         
