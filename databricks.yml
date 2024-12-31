@@ -18,7 +18,8 @@ variables:
   cluster_id:
     description: A pre-existing cluster to use instead of spinning up new ones  
     lookup:
-      cluster: "training_cluster_nanile" 
+      #cluster: "training_cluster_nanile"
+      cluster: "nanile_gpu_ml"
   
   email_address:
     default: nicholas.anile@mantelgroup.com.au
@@ -49,6 +50,7 @@ targets:
     variables: 
       catalog_name: ${workspace.current_user.userName}_parsing
       schema_name: knowledge_extraction
+      volume_name: raw_data
     workspace:
       host: XXX
       root_path: /Users/${workspace.current_user.userName}/${bundle.name}
