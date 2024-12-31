@@ -1,0 +1,28 @@
+common_parameters: &common_parameters
+  catalog_name: ${var.catalog_name}
+  input_schema_name: ${var.schema_name}
+  output_schema_name: ${var.schema_name} #ocr_tests
+  volume_name: ${var.volume_name}
+
+library_resources: &library_resources
+  libraries:
+    - pypi: 
+        package: pymupdf4llm
+
+resources:
+  jobs:
+    e2e-ocr-parsing-demo:
+      name: ${bundle.target}_ocr_parsing_workflow
+      job_clusters:
+        - job_cluster_key: parsing_cluster
+          new_cluster: ${var.default_job_cluster}
+      tasks:
+        - task_key: pdf_split
+          job_cluster_key: parsing_cluster
+          notebook_task:
+            notebook_path: ../../src/tasks/ocr_w_pdfs/split_pdfs_into_images.py
+            base_parameters:
+              file_path: /Users/${workspace.current_user.userName}/${bundle.name}/files/src/utils/common_functions.py
+              <<: *common_parameters
+          <<: *library_resources
+        
