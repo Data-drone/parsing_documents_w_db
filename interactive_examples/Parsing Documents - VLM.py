@@ -11,10 +11,16 @@
 
 # COMMAND ----------
 
+#Some simple helper functions
+from src.utils.databricks_utils import get_username_from_email
+
+# COMMAND ----------
+
 # DBTITLE 1,Set Up Configurations
 import os
 
-catalog = 'brian_ml_dev'
+user_name = get_username_from_email(dbutils = dbutils)
+catalog = f"{user_name}_parsing"
 schema = 'parsing_tests'
 volume = 'raw_data'
 

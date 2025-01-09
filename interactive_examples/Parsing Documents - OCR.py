@@ -18,10 +18,16 @@
 
 # COMMAND ----------
 
+#Some simple helper functions
+from src.utils.databricks_utils import get_username_from_email
+
+# COMMAND ----------
+
 # DBTITLE 1,Set Up Configurations
 import os
 
-catalog = 'brian_ml_dev'
+user_name = get_username_from_email(dbutils = dbutils)
+catalog = f"{user_name}_parsing"
 schema = 'parsing_tests'
 volume = 'raw_data'
 
@@ -83,12 +89,13 @@ pages_in_doc
 
 # COMMAND ----------
 
-  extracted_text = []
+extracted_text = []
 
 for page in pages_in_doc[0:10]:
     # Step 2: Preprocess the image (deskew)
     
     # Step 3: Extract text using OCR
+    print(os.path.join(subfolder, page))
     text = extract_text_from_image(os.path.join(subfolder, page))
     extracted_text.append(text)
 
@@ -204,7 +211,3 @@ Under what conditions would I not be covered for fire damange?
 
 response = model.invoke([HumanMessage(content=prompt)])
 print(response.content)
-
-# COMMAND ----------
-
-
