@@ -1,7 +1,7 @@
 command: [
   "streamlit", 
   "run",
-  "streamlit_databricks_pdf_viewer.py"
+  "pdf_viewer.py"
 ] 
 
 env:
