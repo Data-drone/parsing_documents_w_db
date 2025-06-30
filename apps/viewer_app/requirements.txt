@@ -1,0 +1,3 @@
+fsspec
+databricks-sdk 
+streamlit-pdf-viewer

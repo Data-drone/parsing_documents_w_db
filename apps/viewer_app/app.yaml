@@ -1,0 +1,11 @@
+command: [
+  "streamlit", 
+  "run",
+  "streamlit_databricks_pdf_viewer.py"
+] 
+
+env:
+  - name: "DATABRICKS_VOLUME"
+    valueFrom: "volume"
+  - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+    value: "false"
