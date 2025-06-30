@@ -4,6 +4,7 @@ import tempfile
 import os
 import base64
 import logging
+from streamlit_pdf_viewer import pdf_viewer
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
