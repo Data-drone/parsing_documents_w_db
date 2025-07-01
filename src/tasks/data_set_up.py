@@ -17,6 +17,11 @@ sys.path.append("..")
 #Some simple helper functions
 from utils.databricks_utils import get_username_from_email
 
+### Setup Widgets
+dbutils.widgets.text("schema_name", "my_schema")
+dbutils.widgets.text("volume_name", "raw_data")
+dbutils.widgets.text("file_path", "")
+
 # COMMAND ----------
 
 # DBTITLE 1,Set Up Configurations
