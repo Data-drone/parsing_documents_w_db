@@ -119,7 +119,7 @@ Analysis:"""
         print("Processing with Databricks model...")
         result = llm.invoke(prompt)
         
-        return result
+        return markdown_text, result
         
     except FileNotFoundError:
         raise
@@ -129,7 +129,7 @@ Analysis:"""
 # COMMAND ----------
 
 # Test out the responses
-result = process_pdf_with_databricks(
+markdown_text, result = process_pdf_with_databricks(
     file_path="/Volumes/brian_gen_ai/parsing_test/raw_data/nab-home-and-contents-insurance-pds.pdf",
     databricks_endpoint="databricks-claude-sonnet-4"
 )
