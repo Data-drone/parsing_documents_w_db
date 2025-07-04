@@ -427,9 +427,36 @@ result_df = document_table .select(
         col("extraction_result.extraction_status"),
         col("extraction_result.error_message").alias("extraction_error")
     )
+
+result_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.{SCHEMA}.raw_markdown_parse")
   
 # COMMAND ----------
 
 display(result_df)
 
 # COMMAND ----------
+
+result_df = spark.table(f"{CATALOG}.{SCHEMA}.raw_markdown_parse")
+
+analyze_udf = create_markdown_analysis_udf(
+        databricks_endpoint=databricks_endpoint,
+        max_tokens=120000
+    )
+    
+    # Filter to only successful extractions
+successful_extractions = result_df.filter(col("extraction_status") == "SUCCESS")
+    
+    # Apply analysis UDF
+analysis_df = successful_extractions.select(
+        col("*"),
+        analyze_udf(col("markdown_text")).alias("analysis_result")
+    ).select(
+        col("*"),
+        col("analysis_result.analysis_result"),
+        col("analysis_result.model_used"),
+        col("analysis_result.was_chunked"),
+        col("analysis_result.processing_status"),
+        col("analysis_result.error_message").alias("analysis_error")
+    )
+    
+analysis_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.{SCHEMA}.raw_markdown_llama_summarise")
