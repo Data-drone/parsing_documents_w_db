@@ -38,6 +38,7 @@ display(document_table)
 
 import os
 import re
+import pandas as pd
 import pymupdf4llm
 from databricks_langchain import ChatDatabricks
 from typing import Optional, Tuple, List
@@ -202,97 +203,16 @@ Final Analysis:"""
     return combined_analysis
 
 
-def process_pdf_with_databricks(
-    file_path: str,
-    databricks_endpoint: str = "databricks-meta-llama-3-3-70b-instruct",
-    databricks_host: Optional[str] = None,
-    databricks_token: Optional[str] = None,
-    prompt_template: Optional[str] = None,
-    max_tokens: int = 120000  # Conservative limit for 128k context
-) -> Tuple[str, str]:
-    """
-    Process a PDF file using PyMuPDF4LLM and Databricks LangChain model.
-    Handles large documents by chunking when necessary.
-    
-    Args:
-        file_path (str): Path to the PDF file to process
-        databricks_endpoint (str): Databricks model endpoint name
-        databricks_host (str, optional): Databricks workspace URL
-        databricks_token (str, optional): Databricks access token
-        prompt_template (str, optional): Custom prompt template for processing
-        max_tokens (int): Maximum tokens per request (default: 120k for 128k context)
-        
-    Returns:
-        Tuple[str, str]: A tuple containing (markdown_text, analysis_result)
-        
-    Raises:
-        FileNotFoundError: If the specified file doesn't exist
-        Exception: For other processing errors
-    """
-    try:
-        # Check if file exists
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"File not found: {file_path}")
-        
-        # Extract markdown from PDF using pymupdf4llm
-        print(f"Extracting text from {file_path}...")
-        markdown_text = pymupdf4llm.to_markdown(file_path)
-        
-        if not markdown_text.strip():
-            return "", "No text content extracted from the PDF file."
-        
-        # Initialize Databricks LLM
-        print("Initializing Databricks model...")
-        llm = ChatDatabricks(
-            endpoint=databricks_endpoint,
-            databricks_host=databricks_host,
-            databricks_token=databricks_token,
-            max_tokens=4000,
-            temperature=0.1
-        )
-        
-        # Prepare the default prompt
-        if prompt_template is None:
-            prompt_template = """
-Please analyze and summarize the following document content:
-{content}
-Provide a succint analysis including:
-1. Key Topics
-2. Overall Summary
-3. Why someone would need to check this document
-Analysis:"""
-        
-        # Check document size and process accordingly
-        estimated_tokens = estimate_tokens(markdown_text)
-        prompt_overhead = estimate_tokens(prompt_template.replace("{content}", ""))
-        total_estimated = estimated_tokens + prompt_overhead
-        
-        print(f"Estimated tokens: {estimated_tokens:,} (with prompt: {total_estimated:,})")
-        
-        if total_estimated > max_tokens:
-            print(f"Document too large ({total_estimated:,} tokens), using chunking strategy...")
-            result = process_large_document(markdown_text, llm, prompt_template, max_tokens)
-        else:
-            print("Processing document in single request...")
-            prompt = prompt_template.format(content=markdown_text)
-            result = llm.invoke(prompt)
-        
-        return markdown_text, result
-        
-    except FileNotFoundError:
-        raise
-    except Exception as e:
-        raise Exception(f"Error processing file: {str(e)}")
-
 # COMMAND ----------
 
 # Test out the responses
-markdown_text, result = process_pdf_with_databricks(
-    file_path="/Volumes/brian_gen_ai/parsing_test/raw_data/nab-home-and-contents-insurance-pds.pdf",
-    databricks_endpoint="databricks-claude-sonnet-4"
+markdown_text, result = extract_pdf_to_markdown_udf(
+    file_path=pd.Series(["/Volumes/brian_gen_ai/parsing_test/raw_data/nab-home-and-contents-insurance-pds.pdf"])
 )
 
-display(result.content)
+print(result)
+
+
 
 # COMMAND ----------
 
@@ -305,64 +225,211 @@ from pyspark.sql.functions import pandas_udf, col, lit
 max_tokens = 128000
 databricks_endpoint = 'databricks-meta-llama-3-3-70b-instruct'
 
+# =============================================================================
+# UDF 1: PDF to Markdown Extraction
+# =============================================================================
+
 @pandas_udf(
-        returnType=StructType([
-            StructField("file_path", StringType(), True),
-            StructField("markdown_text", StringType(), True),
-            StructField("analysis_result", StringType(), True),
-            StructField("model_used", StringType(), True),
-            StructField("was_chunked", StringType(), True),
-            StructField("estimated_tokens", StringType(), True)
-        ])
+    returnType=StructType([
+        StructField("file_path", StringType(), True),
+        StructField("markdown_text", StringType(), True),
+        StructField("estimated_tokens", StringType(), True),
+        StructField("extraction_status", StringType(), True),
+        StructField("error_message", StringType(), True)
+    ])
 )
-def process_pdf_udf(file_paths: pd.Series) -> pd.DataFrame:
+def extract_pdf_to_markdown_udf(file_paths: pd.Series) -> pd.DataFrame:
     """
-    Pandas UDF that processes PDF files with the configured model.
-    Automatically handles large documents through intelligent chunking.
+    UDF to extract markdown from PDF files.
+    Fast I/O-bound operation that can be done independently.
     """
     results = []
     
     for file_path in file_paths:
-        if file_path.startswith('dbfs:'):
-            file_path = file_path.replace('dbfs:', '')
+        # Handle DBFS paths
+        processed_path = file_path.replace('dbfs:', '') if file_path.startswith('dbfs:') else file_path
+        
         try:
-            markdown_text, analysis_result = process_pdf_with_databricks(
-                file_path=file_path,
-                databricks_endpoint="",
-                # databricks_host=databricks_host,
-                # databricks_token=databricks_token,
-                # prompt_template=prompt_template,
-                # max_tokens=max_tokens
-            )
+            # Check if file exists
+            if not os.path.exists(processed_path):
+                results.append({
+                    "file_path": file_path,
+                    "markdown_text": "",
+                    "estimated_tokens": "0",
+                    "extraction_status": "FAILED",
+                    "error_message": f"File not found: {processed_path}"
+                })
+                continue
             
-            # Check if document was chunked
-            estimated_tokens = estimate_tokens(markdown_text)
-            was_chunked = "Yes" if estimated_tokens > (max_tokens - 8000) else "No"
+            # Extract markdown from PDF
+            print(f"Extracting text from {processed_path}...")
+            markdown_text = pymupdf4llm.to_markdown(processed_path)
             
-            results.append({
-                "file_path": file_path,
-                "markdown_text": markdown_text,
-                "analysis_result": analysis_result,
-                "model_used": databricks_endpoint,
-                "was_chunked": was_chunked,
-                "estimated_tokens": str(estimated_tokens)
-            })
+            if not markdown_text.strip():
+                results.append({
+                    "file_path": file_path,
+                    "markdown_text": "",
+                    "estimated_tokens": "0",
+                    "extraction_status": "NO_CONTENT",
+                    "error_message": "No text content extracted from PDF"
+                })
+            else:
+                estimated_tokens = estimate_tokens(markdown_text)
+                results.append({
+                    "file_path": file_path,
+                    "markdown_text": markdown_text,
+                    "estimated_tokens": str(estimated_tokens),
+                    "extraction_status": "SUCCESS",
+                    "error_message": None
+                })
+                
         except Exception as e:
             results.append({
                 "file_path": file_path,
                 "markdown_text": "",
-                "analysis_result": f"Error: {str(e)}",
-                "model_used": databricks_endpoint,
-                "was_chunked": "Error",
-                "estimated_tokens": "0"
+                "estimated_tokens": "0",
+                "extraction_status": "ERROR",
+                "error_message": str(e)
             })
     
     return pd.DataFrame(results)
+
+
+# =============================================================================
+# UDF 2: Markdown Analysis with LLM
+# =============================================================================
+
+def create_markdown_analysis_udf(
+    databricks_endpoint: str = "databricks-meta-llama-3-3-70b-instruct",
+    prompt_template: Optional[str] = None,
+    max_tokens: int = 120000
+):
+    """
+    Factory function to create a markdown analysis UDF with specific model configuration.
+    """
+    
+    @pandas_udf(
+        returnType=StructType([
+            StructField("markdown_text", StringType(), True),
+            StructField("analysis_result", StringType(), True),
+            StructField("model_used", StringType(), True),
+            StructField("was_chunked", StringType(), True),
+            StructField("processing_status", StringType(), True),
+            StructField("error_message", StringType(), True)
+        ])
+    )
+    def analyze_markdown_udf(markdown_texts: pd.Series) -> pd.DataFrame:
+        """
+        UDF to analyze markdown text using LLM.
+        Handles chunking for large documents automatically.
+        """
+        results = []
+        
+        # Initialize LLM once per batch
+        try:
+            llm = ChatDatabricks(
+                endpoint=databricks_endpoint,
+                max_tokens=4000,
+                temperature=0.1
+            )
+        except Exception as e:
+            # If LLM initialization fails, return errors for all inputs
+            for markdown_text in markdown_texts:
+                results.append({
+                    "markdown_text": markdown_text,
+                    "analysis_result": "",
+                    "model_used": databricks_endpoint,
+                    "was_chunked": "ERROR",
+                    "processing_status": "LLM_INIT_FAILED", 
+                    "error_message": f"Failed to initialize LLM: {str(e)}"
+                })
+            return pd.DataFrame(results)
+        
+        # Default prompt template
+        if prompt_template is None:
+            default_prompt = """
+Please analyze and summarize the following document content:
+{content}
+Provide a succint analysis including:
+1. Key Topics
+2. Overall Summary
+3. Why someone would need to check this document
+Analysis:"""
+        else:
+            default_prompt = prompt_template
+        
+        # Process each markdown text
+        for markdown_text in markdown_texts:
+            try:
+                # Skip empty texts
+                if not markdown_text or not markdown_text.strip():
+                    results.append({
+                        "markdown_text": markdown_text,
+                        "analysis_result": "No content to analyze",
+                        "model_used": databricks_endpoint,
+                        "was_chunked": "NO",
+                        "processing_status": "SKIPPED",
+                        "error_message": "Empty or null markdown text"
+                    })
+                    continue
+                
+                # Check document size and process accordingly
+                estimated_tokens = estimate_tokens(markdown_text)
+                prompt_overhead = estimate_tokens(default_prompt.replace("{content}", ""))
+                total_estimated = estimated_tokens + prompt_overhead
+                
+                print(f"Processing markdown: {estimated_tokens:,} tokens (with prompt: {total_estimated:,})")
+                
+                if total_estimated > max_tokens:
+                    print(f"Document too large ({total_estimated:,} tokens), using chunking strategy...")
+                    analysis_result = process_large_document(markdown_text, llm, default_prompt, max_tokens)
+                    was_chunked = "YES"
+                else:
+                    print("Processing document in single request...")
+                    prompt = default_prompt.format(content=markdown_text)
+                    result = llm.invoke(prompt)
+                    analysis_result = result.content
+                    was_chunked = "NO"
+                
+                results.append({
+                    "markdown_text": markdown_text,
+                    "analysis_result": analysis_result,
+                    "model_used": databricks_endpoint,
+                    "was_chunked": was_chunked,
+                    "processing_status": "SUCCESS",
+                    "error_message": None
+                })
+                
+            except Exception as e:
+                results.append({
+                    "markdown_text": markdown_text,
+                    "analysis_result": "",
+                    "model_used": databricks_endpoint,
+                    "was_chunked": "ERROR",
+                    "processing_status": "ANALYSIS_FAILED",
+                    "error_message": str(e)
+                })
+        
+        return pd.DataFrame(results)
+    
+    return analyze_markdown_udf
+
 # COMMAND ----------
 
-result_df = document_table \
-  .withColumn("basic_parse_summary", process_pdf_udf(col("volume_path")))
+result_df = document_table .select(
+        col("*"),
+        extract_pdf_to_markdown_udf(col("volume_path")).alias("extraction_result")
+    ).select(
+        col("*"),
+        col("extraction_result.file_path").alias("extracted_file_path"),
+        col("extraction_result.markdown_text"),
+        col("extraction_result.estimated_tokens"),
+        col("extraction_result.extraction_status"),
+        col("extraction_result.error_message").alias("extraction_error")
+    )
   
 # COMMAND ----------
 
 display(result_df)
+
+# COMMAND ----------
