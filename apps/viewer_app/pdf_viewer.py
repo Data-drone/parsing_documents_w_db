@@ -27,7 +27,7 @@ with st.sidebar:
     st.header("Navigation")
     page = st.selectbox(
         "Select Page",
-        ["View Volumes", "View Markdown Extraction"],
+        ["View Volumes", "View Markdown Extraction", "View VLM Extraction"],
         index=0
     )
     st.divider()
@@ -109,6 +109,57 @@ def get_document_details(file_name):
     except Exception as e:
         logger.error(f"Error querying document details: {e}")
         return None
+
+# VLM Extraction Functions
+def get_vlm_document_list():
+    """Get distinct source filenames from the document_store_ocr table"""
+    try:
+        conn = get_connection(SQL_WAREHOUSE)
+        with conn.cursor() as cursor:
+            query = """
+            SELECT DISTINCT 
+                source_filename,
+                MAX(total_pages) as total_pages,
+                MAX(file_size_bytes) as file_size_bytes,
+                MAX(processing_timestamp) as latest_processing
+            FROM brian_gen_ai.parsing_test.document_store_ocr
+            WHERE source_filename IS NOT NULL
+            GROUP BY source_filename
+            ORDER BY latest_processing DESC
+            """
+            cursor.execute(query)
+            return cursor.fetchall_arrow().to_pandas()
+    except Exception as e:
+        logger.error(f"Error querying VLM document list: {e}")
+        return pd.DataFrame()
+
+def get_vlm_document_pages(source_filename):
+    """Get all pages for a specific document from the document_store_ocr table"""
+    try:
+        conn = get_connection(SQL_WAREHOUSE)
+        with conn.cursor() as cursor:
+            query = """
+            SELECT 
+                doc_id,
+                source_filename,
+                page_number,
+                page_image_png,
+                total_pages,
+                file_size_bytes,
+                processing_timestamp,
+                metadata_json,
+                ocr_text,
+                ocr_timestamp,
+                ocr_model
+            FROM brian_gen_ai.parsing_test.document_store_ocr
+            WHERE source_filename = ?
+            ORDER BY page_number ASC
+            """
+            cursor.execute(query, (source_filename,))
+            return cursor.fetchall_arrow().to_pandas()
+    except Exception as e:
+        logger.error(f"Error querying VLM document pages: {e}")
+        return pd.DataFrame()
 
 # List files in the given volume path
 def list_files_in_volume():
@@ -398,4 +449,170 @@ elif page == "View Markdown Extraction":
             
     else:
         st.warning("No data found in the document_markdown table. Please check your SQL warehouse connection and table permissions.")
+        st.info("Make sure the DATABRICKS_SQL_WAREHOUSE environment variable is set correctly.")
+
+# Page 3: View VLM Extraction
+elif page == "View VLM Extraction":
+    st.title("VLM Extraction")
+    st.markdown("**Extract and view OCR content from document pages**")
+    st.markdown(f"**SQL Warehouse:** `{SQL_WAREHOUSE}` (set via $DATABRICKS_SQL_WAREHOUSE env var)")
+    
+    # Add refresh button for the table data
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 Refresh VLM Data") or 'vlm_data' not in st.session_state:
+            logger.info("Refreshing VLM document data from SQL warehouse")
+            st.session_state['vlm_data'] = get_vlm_document_list()
+    
+    # Get the data
+    vlm_df = st.session_state.get('vlm_data', pd.DataFrame())
+    
+    if not vlm_df.empty:
+        st.subheader("Document Processing Results")
+        
+        # Display summary metrics
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Documents", len(vlm_df))
+        with col2:
+            total_pages = vlm_df['total_pages'].sum() if 'total_pages' in vlm_df.columns else 0
+            st.metric("Total Pages", int(total_pages) if pd.notna(total_pages) else 0)
+        with col3:
+            total_size_mb = (vlm_df['file_size_bytes'].sum() / (1024*1024)) if 'file_size_bytes' in vlm_df.columns else 0
+            st.metric("Total Size", f"{total_size_mb:.1f} MB" if pd.notna(total_size_mb) else "N/A")
+        
+        # Document selection
+        st.subheader("Select Document")
+        
+        # Display documents table
+        display_vlm_df = vlm_df[['source_filename', 'total_pages']].copy()
+        st.dataframe(
+            display_vlm_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "source_filename": "Document Name",
+                "total_pages": "Total Pages"
+            }
+        )
+        
+        # Document selection dropdown
+        selected_document = st.selectbox(
+            "Choose a document to view:",
+            options=vlm_df['source_filename'].tolist(),
+            format_func=lambda x: x if x else "Select a document..."
+        )
+        
+        if selected_document:
+            # Load all pages for the selected document
+            with st.spinner("Loading document pages..."):
+                pages_df = get_vlm_document_pages(selected_document)
+            
+            if not pages_df.empty:
+                # Page navigation
+                st.subheader(f"Document: {selected_document}")
+                
+                max_pages = len(pages_df)
+                if max_pages > 0:
+                    # Page selection
+                    col1, col2, col3 = st.columns([1, 2, 1])
+                    with col2:
+                        current_page = st.selectbox(
+                            f"Select Page (1 to {max_pages}):",
+                            options=range(1, max_pages + 1),
+                            index=0,
+                            format_func=lambda x: f"Page {x}"
+                        )
+                    
+                    # Get the current page data
+                    page_data = pages_df[pages_df['page_number'] == current_page]
+                    if not page_data.empty:
+                        page_row = page_data.iloc[0]
+                        
+                        # Display page information
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Page", f"{current_page}/{max_pages}")
+                        with col2:
+                            st.metric("OCR Model", page_row.get('ocr_model', 'N/A'))
+                        with col3:
+                            if 'ocr_timestamp' in page_row and pd.notna(page_row['ocr_timestamp']):
+                                st.metric("OCR Date", str(page_row['ocr_timestamp'])[:10])
+                        with col4:
+                            char_count = len(page_row.get('ocr_text', '')) if pd.notna(page_row.get('ocr_text')) else 0
+                            st.metric("Text Length", f"{char_count} chars")
+                        
+                        # Side-by-side display
+                        st.markdown("---")
+                        image_col, text_col = st.columns(2)
+                        
+                        with image_col:
+                            st.subheader("Page Image")
+                            if 'page_image_png' in page_row and pd.notna(page_row['page_image_png']):
+                                try:
+                                    # Convert binary PNG data to displayable image
+                                    import base64
+                                    from io import BytesIO
+                                    
+                                    # Get the binary data
+                                    image_binary = page_row['page_image_png']
+                                    
+                                    # Display the image
+                                    st.image(
+                                        image_binary,
+                                        caption=f"Page {current_page}",
+                                        use_column_width=True
+                                    )
+                                except Exception as e:
+                                    st.error(f"Error displaying image: {e}")
+                                    logger.error(f"Error displaying page image: {e}")
+                            else:
+                                st.warning("No image data available for this page.")
+                        
+                        with text_col:
+                            st.subheader("OCR Text")
+                            if 'ocr_text' in page_row and pd.notna(page_row['ocr_text']) and page_row['ocr_text']:
+                                # Display OCR text in a scrollable text area
+                                ocr_text = str(page_row['ocr_text'])
+                                
+                                # Show character count for debugging
+                                st.caption(f"Text length: {len(ocr_text)} characters")
+                                
+                                # Use st.text_area for better text display
+                                st.text_area(
+                                    "OCR Content:",
+                                    value=ocr_text,
+                                    height=600,
+                                    disabled=True,
+                                    label_visibility="collapsed"
+                                )
+                            else:
+                                st.warning("No OCR text available for this page.")
+                        
+                        # Additional page navigation buttons
+                        st.markdown("---")
+                        nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns(5)
+                        
+                        with nav_col1:
+                            if st.button("⏮️ First", disabled=(current_page == 1)):
+                                st.rerun()
+                        with nav_col2:
+                            if st.button("⬅️ Previous", disabled=(current_page == 1)):
+                                st.rerun()
+                        with nav_col3:
+                            st.write(f"Page {current_page}")
+                        with nav_col4:
+                            if st.button("➡️ Next", disabled=(current_page == max_pages)):
+                                st.rerun()
+                        with nav_col5:
+                            if st.button("⏭️ Last", disabled=(current_page == max_pages)):
+                                st.rerun()
+                    else:
+                        st.error(f"No data found for page {current_page}")
+                else:
+                    st.warning("No pages found for the selected document.")
+            else:
+                st.warning("No page data found for the selected document.")
+    else:
+        st.warning("No data found in the document_store_ocr table. Please check your SQL warehouse connection and table permissions.")
         st.info("Make sure the DATABRICKS_SQL_WAREHOUSE environment variable is set correctly.")
