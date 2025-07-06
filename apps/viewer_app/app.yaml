@@ -9,3 +9,5 @@ env:
     valueFrom: "volume"
   - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
     value: "false"
+  - name: "DATABRICKS_SQL_WAREHOUSE"
+    valueFrom: "sql_warehouse"

@@ -1,3 +1,4 @@
 fsspec
 databricks-sdk 
+databricks-sql-connector
 streamlit-pdf-viewer
