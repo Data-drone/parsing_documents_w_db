@@ -27,20 +27,72 @@ with st.sidebar:
     st.header("Navigation")
     page = st.selectbox(
         "Select Page",
-        ["View Volumes", "View Markdown Extraction", "View VLM Extraction"],
+        ["Home", "View Volumes", "View Markdown Extraction", "View VLM Extraction"],
         index=0
     )
     st.divider()
 
 # List files in the given volume path
 def list_files_in_volume():
+    # Use configured volume path if available, otherwise fall back to environment variable
+    volume_path = st.session_state.get('constructed_volume_path', VOLUME_PATH)
+    
     w = WorkspaceClient()
     try:
-        files = [f.path for f in w.files.list_directory_contents(VOLUME_PATH)]
+        files = [f.path for f in w.files.list_directory_contents(volume_path)]
         pdf_files = [f for f in files if f.lower().endswith('.pdf')]
         return pdf_files
     except Exception as e:
-        logger.error(f"Error listing files: {e}")
+        logger.error(f"Error listing files in volume {volume_path}: {e}")
+        return []
+
+# Unity Catalog browsing functions
+def get_catalogs():
+    """Get list of available UC catalogs"""
+    try:
+        conn = get_connection(SQL_WAREHOUSE)
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW CATALOGS")
+            result = cursor.fetchall_arrow().to_pandas()
+            return result['catalog'].tolist() if 'catalog' in result.columns else []
+    except Exception as e:
+        logger.error(f"Error listing catalogs: {e}")
+        return []
+
+def get_schemas(catalog):
+    """Get list of schemas in a catalog"""
+    try:
+        conn = get_connection(SQL_WAREHOUSE)
+        with conn.cursor() as cursor:
+            cursor.execute(f"SHOW SCHEMAS IN {catalog}")
+            result = cursor.fetchall_arrow().to_pandas()
+            return result['databaseName'].tolist() if 'databaseName' in result.columns else []
+    except Exception as e:
+        logger.error(f"Error listing schemas in {catalog}: {e}")
+        return []
+
+def get_tables(catalog, schema):
+    """Get list of tables in a catalog.schema"""
+    try:
+        conn = get_connection(SQL_WAREHOUSE)
+        with conn.cursor() as cursor:
+            cursor.execute(f"SHOW TABLES IN {catalog}.{schema}")
+            result = cursor.fetchall_arrow().to_pandas()
+            return result['tableName'].tolist() if 'tableName' in result.columns else []
+    except Exception as e:
+        logger.error(f"Error listing tables in {catalog}.{schema}: {e}")
+        return []
+
+def get_volumes(catalog, schema):
+    """Get list of volumes in a catalog.schema"""
+    try:
+        conn = get_connection(SQL_WAREHOUSE)
+        with conn.cursor() as cursor:
+            cursor.execute(f"SHOW VOLUMES IN {catalog}.{schema}")
+            result = cursor.fetchall_arrow().to_pandas()
+            return result['volume_name'].tolist() if 'volume_name' in result.columns else []
+    except Exception as e:
+        logger.error(f"Error listing volumes in {catalog}.{schema}: {e}")
         return []
 
 # Cache the SQL connection - following official Databricks app template pattern
@@ -56,10 +108,19 @@ def get_connection(warehouse):
 # Query the document_markdown table (optimized for list view)
 def get_document_markdown_data():
     """Query the document_markdown table and return as a DataFrame (excluding large columns)"""
+    if not st.session_state.get('config_saved'):
+        return pd.DataFrame()
+    
+    # Get table name from session state
+    catalog = st.session_state.get('selected_catalog', '')
+    schema = st.session_state.get('selected_schema', '')
+    table = st.session_state.get('markdown_table', '')
+    full_table_name = f"{catalog}.{schema}.{table}"
+    
     try:
         conn = get_connection(SQL_WAREHOUSE)
         with conn.cursor() as cursor:
-            query = """
+            query = f"""
             SELECT 
                 file_name,
                 volume_path,
@@ -73,22 +134,31 @@ def get_document_markdown_data():
                 character_count,
                 page_count,
                 processing_timestamp
-            FROM brian_gen_ai.parsing_test.document_markdown
+            FROM {full_table_name}
             ORDER BY processing_timestamp DESC
             """
             cursor.execute(query)
             return cursor.fetchall_arrow().to_pandas()
     except Exception as e:
-        logger.error(f"Error querying document_markdown table: {e}")
+        logger.error(f"Error querying document_markdown table {full_table_name}: {e}")
         return pd.DataFrame()  # Return empty DataFrame on error
 
 # Query full details for a specific document (only what we need for display)
 def get_document_details(file_name):
     """Get full details for a specific document including markdown content"""
+    if not st.session_state.get('config_saved'):
+        return None
+    
+    # Get table name from session state
+    catalog = st.session_state.get('selected_catalog', '')
+    schema = st.session_state.get('selected_schema', '')
+    table = st.session_state.get('markdown_table', '')
+    full_table_name = f"{catalog}.{schema}.{table}"
+    
     try:
         conn = get_connection(SQL_WAREHOUSE)
         with conn.cursor() as cursor:
-            query = """
+            query = f"""
             SELECT 
                 file_name,
                 volume_path,
@@ -100,29 +170,38 @@ def get_document_details(file_name):
                 processing_time_seconds,
                 error_message,
                 markdown_content
-            FROM brian_gen_ai.parsing_test.document_markdown
+            FROM {full_table_name}
             WHERE file_name = ?
             """
             cursor.execute(query, (file_name,))
             result = cursor.fetchall_arrow().to_pandas()
             return result.iloc[0] if len(result) > 0 else None
     except Exception as e:
-        logger.error(f"Error querying document details: {e}")
+        logger.error(f"Error querying document details from {full_table_name}: {e}")
         return None
 
 # VLM Extraction Functions
 def get_vlm_document_list():
     """Get distinct source filenames from the document_store_ocr table"""
+    if not st.session_state.get('config_saved'):
+        return pd.DataFrame()
+    
+    # Get table name from session state
+    catalog = st.session_state.get('selected_catalog', '')
+    schema = st.session_state.get('selected_schema', '')
+    table = st.session_state.get('vlm_table', '')
+    full_table_name = f"{catalog}.{schema}.{table}"
+    
     try:
         conn = get_connection(SQL_WAREHOUSE)
         with conn.cursor() as cursor:
-            query = """
+            query = f"""
             SELECT DISTINCT 
                 source_filename,
                 MAX(total_pages) as total_pages,
                 MAX(file_size_bytes) as file_size_bytes,
                 MAX(processing_timestamp) as latest_processing
-            FROM brian_gen_ai.parsing_test.document_store_ocr
+            FROM {full_table_name}
             WHERE source_filename IS NOT NULL
             GROUP BY source_filename
             ORDER BY latest_processing DESC
@@ -130,15 +209,24 @@ def get_vlm_document_list():
             cursor.execute(query)
             return cursor.fetchall_arrow().to_pandas()
     except Exception as e:
-        logger.error(f"Error querying VLM document list: {e}")
+        logger.error(f"Error querying VLM document list from {full_table_name}: {e}")
         return pd.DataFrame()
 
 def get_vlm_document_pages(source_filename):
     """Get all pages for a specific document from the document_store_ocr table"""
+    if not st.session_state.get('config_saved'):
+        return pd.DataFrame()
+    
+    # Get table name from session state
+    catalog = st.session_state.get('selected_catalog', '')
+    schema = st.session_state.get('selected_schema', '')
+    table = st.session_state.get('vlm_table', '')
+    full_table_name = f"{catalog}.{schema}.{table}"
+    
     try:
         conn = get_connection(SQL_WAREHOUSE)
         with conn.cursor() as cursor:
-            query = """
+            query = f"""
             SELECT 
                 doc_id,
                 source_filename,
@@ -151,14 +239,14 @@ def get_vlm_document_pages(source_filename):
                 ocr_text,
                 ocr_timestamp,
                 ocr_model
-            FROM brian_gen_ai.parsing_test.document_store_ocr
+            FROM {full_table_name}
             WHERE source_filename = ?
             ORDER BY page_number ASC
             """
             cursor.execute(query, (source_filename,))
             return cursor.fetchall_arrow().to_pandas()
     except Exception as e:
-        logger.error(f"Error querying VLM document pages: {e}")
+        logger.error(f"Error querying VLM document pages from {full_table_name}: {e}")
         return pd.DataFrame()
 
 # List files in the given volume path
@@ -246,10 +334,261 @@ def download_pdf_file(file_path):
         traceback.print_exc()
         return None
 
+# Page 0: Home - Configuration
+if page == "Home":
+    st.title("Databricks Document Processing Hub")
+    st.markdown("**Configure your Unity Catalog connection and data processing pipeline**")
+    st.markdown(f"**Default Volume Path:** `{VOLUME_PATH}` | **SQL Warehouse:** `{SQL_WAREHOUSE}`")
+    
+    # Data Flow Visualization
+    st.subheader("📊 Data Processing Pipeline")
+    
+    # Responsive pipeline visualization
+    col1, arrow1, col2, arrow2, col3 = st.columns([3, 1, 3, 1, 3])
+    
+    with col1:
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    padding: 20px; border-radius: 10px; text-align: center; 
+                    color: white; min-height: 120px; display: flex; 
+                    flex-direction: column; justify-content: center;">
+            <h3 style="color: white; margin: 0;">📁 Unity Catalog Volume</h3>
+            <p style="margin: 10px 0 0 0; opacity: 0.9;">PDF Files Storage</p>
+            <code style="background: rgba(255,255,255,0.2); padding: 5px; 
+                        border-radius: 5px; color: white;">/Volumes/cat/sch/vol</code>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with arrow1:
+        st.markdown("""
+        <div style="display: flex; align-items: center; justify-content: center; height: 120px;">
+            <div style="font-size: 24px;">→</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); 
+                    padding: 20px; border-radius: 10px; text-align: center; 
+                    color: white; min-height: 120px; display: flex; 
+                    flex-direction: column; justify-content: center;">
+            <h3 style="color: white; margin: 0;">📄 Markdown Table</h3>
+            <p style="margin: 10px 0 0 0; opacity: 0.9;">Document Text + Metadata</p>
+            <small style="opacity: 0.8;">Full text extraction & analysis</small>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with arrow2:
+        st.markdown("""
+        <div style="display: flex; align-items: center; justify-content: center; height: 120px;">
+            <div style="font-size: 24px;">→</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); 
+                    padding: 20px; border-radius: 10px; text-align: center; 
+                    color: white; min-height: 120px; display: flex; 
+                    flex-direction: column; justify-content: center;">
+            <h3 style="color: white; margin: 0;">🖼️ VLM/OCR Table</h3>
+            <p style="margin: 10px 0 0 0; opacity: 0.9;">Page Images + OCR Text</p>
+            <small style="opacity: 0.8;">Visual content extraction</small>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Detailed descriptions below - aligned with pipeline boxes
+    st.markdown("<br>", unsafe_allow_html=True)
+    desc_col1, desc_spacer1, desc_col2, desc_spacer2, desc_col3 = st.columns([3, 1, 3, 1, 3])
+    
+    with desc_col1:
+        st.info("""
+        **📁 Source Volume**
+        
+        Raw PDF files stored in Unity Catalog volumes. This is your document repository where all source files are maintained with proper governance and access controls.
+        
+        • File storage & organization  
+        • Access control & permissions  
+        • Version management  
+        """)
+    
+    with desc_col2:
+        st.info("""
+        **📄 Text Processing**
+        
+        Extracted markdown content with comprehensive document metadata. This stage converts PDFs into structured text data ready for analysis and search.
+        
+        • Full text extraction  
+        • Document metadata  
+        • Processing statistics  
+        """)
+    
+    with desc_col3:
+        st.info("""
+        **🖼️ Visual Processing**
+        
+        Page-by-page image extraction with OCR text content. This enables visual document analysis and provides backup text extraction methods.
+        
+        • Page image capture  
+        • OCR text extraction  
+        • Visual content analysis  
+        """)
+    
+    st.markdown("---")
+    
+    # Configuration section
+    st.subheader("🔧 Configuration")
+    
+    # Test connection first
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if st.button("🔗 Test Connection"):
+            try:
+                conn = get_connection(SQL_WAREHOUSE)
+                st.success("✅ SQL Warehouse connection successful!")
+            except Exception as e:
+                st.error(f"❌ Connection failed: {str(e)}")
+                st.stop()
+    
+    # Catalog selection
+    st.subheader("📁 Unity Catalog Selection")
+    
+    # Load catalogs
+    with st.spinner("Loading catalogs..."):
+        catalogs = get_catalogs()
+    
+    if catalogs:
+        selected_catalog = st.selectbox(
+            "Select Catalog:",
+            options=catalogs,
+            index=catalogs.index(st.session_state.get('selected_catalog', catalogs[0])) if st.session_state.get('selected_catalog') in catalogs else 0
+        )
+        st.session_state['selected_catalog'] = selected_catalog
+        
+        # Load schemas for selected catalog
+        with st.spinner(f"Loading schemas in {selected_catalog}..."):
+            schemas = get_schemas(selected_catalog)
+        
+        if schemas:
+            selected_schema = st.selectbox(
+                "Select Schema:",
+                options=schemas,
+                index=schemas.index(st.session_state.get('selected_schema', schemas[0])) if st.session_state.get('selected_schema') in schemas else 0
+            )
+            st.session_state['selected_schema'] = selected_schema
+            
+            # Volume Configuration Section
+            st.subheader("📁 Volume Configuration")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Volume Schema Selection:**")
+                volume_schema = st.selectbox(
+                    "Schema for Volume:",
+                    options=schemas,
+                    index=schemas.index(st.session_state.get('volume_schema', selected_schema)) if st.session_state.get('volume_schema') in schemas else schemas.index(selected_schema),
+                    key="volume_schema_select"
+                )
+                st.session_state['volume_schema'] = volume_schema
+            
+            with col2:
+                st.markdown("**Volume Selection:**")
+                # Load volumes for selected catalog.schema
+                with st.spinner(f"Loading volumes in {selected_catalog}.{volume_schema}..."):
+                    volumes = get_volumes(selected_catalog, volume_schema)
+                
+                if volumes:
+                    selected_volume = st.selectbox(
+                        "Select Volume:",
+                        options=volumes,
+                        index=volumes.index(st.session_state.get('selected_volume', volumes[0])) if st.session_state.get('selected_volume') in volumes else 0
+                    )
+                    st.session_state['selected_volume'] = selected_volume
+                    
+                    # Construct full volume path
+                    volume_path = f"/Volumes/{selected_catalog}/{volume_schema}/{selected_volume}"
+                    st.session_state['constructed_volume_path'] = volume_path
+                    st.code(f"Volume Path: {volume_path}")
+                else:
+                    st.warning(f"No volumes found in {selected_catalog}.{volume_schema}")
+                    # Fallback to environment variable
+                    st.session_state['constructed_volume_path'] = VOLUME_PATH
+                    st.info(f"Using environment volume path: {VOLUME_PATH}")
+            
+            # Load tables for selected catalog.schema
+            with st.spinner(f"Loading tables in {selected_catalog}.{selected_schema}..."):
+                tables = get_tables(selected_catalog, selected_schema)
+            
+            if tables:
+                st.subheader("📊 Table Selection")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**Markdown Extraction Table:**")
+                    markdown_table = st.selectbox(
+                        "Table for markdown extraction:",
+                        options=tables,
+                        index=tables.index(st.session_state.get('markdown_table', tables[0])) if st.session_state.get('markdown_table') in tables else 0,
+                        key="markdown_table_select"
+                    )
+                    st.session_state['markdown_table'] = markdown_table
+                    
+                    # Show selected table name
+                    markdown_full_name = f"{selected_catalog}.{selected_schema}.{markdown_table}"
+                    st.code(markdown_full_name)
+                
+                with col2:
+                    st.markdown("**VLM/OCR Extraction Table:**")
+                    vlm_table = st.selectbox(
+                        "Table for VLM/OCR extraction:",
+                        options=tables,
+                        index=tables.index(st.session_state.get('vlm_table', tables[0])) if st.session_state.get('vlm_table') in tables else 0,
+                        key="vlm_table_select"
+                    )
+                    st.session_state['vlm_table'] = vlm_table
+                    
+                    # Show selected table name
+                    vlm_full_name = f"{selected_catalog}.{selected_schema}.{vlm_table}"
+                    st.code(vlm_full_name)
+                
+                # Save configuration
+                st.markdown("---")
+                if st.button("💾 Save Configuration"):
+                    st.session_state['config_saved'] = True
+                    st.success("✅ Configuration saved! You can now use the other tabs.")
+                
+                # Show current configuration
+                if st.session_state.get('config_saved'):
+                    st.success("✅ Configuration is saved and ready to use!")
+                    
+                    with st.expander("📋 Current Configuration", expanded=False):
+                        st.write(f"**Catalog:** {selected_catalog}")
+                        st.write(f"**Schema:** {selected_schema}")
+                        st.write(f"**Volume Schema:** {volume_schema}")
+                        st.write(f"**Volume Path:** {st.session_state.get('constructed_volume_path', VOLUME_PATH)}")
+                        st.write(f"**Markdown Table:** {markdown_full_name}")
+                        st.write(f"**VLM Table:** {vlm_full_name}")
+                        st.write(f"**SQL Warehouse:** {SQL_WAREHOUSE}")
+            else:
+                st.warning(f"No tables found in {selected_catalog}.{selected_schema}")
+        else:
+            st.warning(f"No schemas found in catalog '{selected_catalog}'")
+    else:
+        st.error("No catalogs found. Please check your SQL warehouse connection and permissions.")
+    
+    # Navigation hint
+    if not st.session_state.get('config_saved'):
+        st.info("👆 Please configure your catalog, volume, and tables above, then save the configuration to use the other tabs.")
+
 # Page 1: View Volumes
-if page == "View Volumes":
+elif page == "View Volumes":
     st.title("Databricks Volume PDF Viewer (SDK)")
-    st.markdown(f"**Current Volume Path:** `{VOLUME_PATH}` (set via $DATABRICKS_VOLUME env var)")
+    
+    # Show configured volume path
+    volume_path = st.session_state.get('constructed_volume_path', VOLUME_PATH)
+    st.markdown(f"**Current Volume Path:** `{volume_path}`")
+    
     st.markdown("""
     This app lets you browse and preview PDF files stored in a Databricks Unity Catalog volume.
     - Use the sidebar to refresh and select a PDF file.
@@ -284,9 +623,20 @@ if page == "View Volumes":
 
 # Page 2: View Markdown Extraction
 elif page == "View Markdown Extraction":
+    # Check if configuration is saved
+    if not st.session_state.get('config_saved'):
+        st.warning("⚠️ Please configure your catalog and tables on the Home page first.")
+        st.stop()
+    
     st.title("Markdown Extraction")
     st.markdown("**Extract and view markdown content from PDF files**")
-    st.markdown(f"**SQL Warehouse:** `{SQL_WAREHOUSE}` (set via $DATABRICKS_SQL_WAREHOUSE env var)")
+    
+    # Show current table configuration
+    catalog = st.session_state.get('selected_catalog', '')
+    schema = st.session_state.get('selected_schema', '')
+    table = st.session_state.get('markdown_table', '')
+    full_table_name = f"{catalog}.{schema}.{table}"
+    st.markdown(f"**Table:** `{full_table_name}` | **SQL Warehouse:** `{SQL_WAREHOUSE}`")
     
     # Add refresh button for the table data
     col1, col2 = st.columns([1, 4])
@@ -453,9 +803,20 @@ elif page == "View Markdown Extraction":
 
 # Page 3: View VLM Extraction
 elif page == "View VLM Extraction":
+    # Check if configuration is saved
+    if not st.session_state.get('config_saved'):
+        st.warning("⚠️ Please configure your catalog and tables on the Home page first.")
+        st.stop()
+    
     st.title("VLM Extraction")
     st.markdown("**Extract and view OCR content from document pages**")
-    st.markdown(f"**SQL Warehouse:** `{SQL_WAREHOUSE}` (set via $DATABRICKS_SQL_WAREHOUSE env var)")
+    
+    # Show current table configuration
+    catalog = st.session_state.get('selected_catalog', '')
+    schema = st.session_state.get('selected_schema', '')
+    table = st.session_state.get('vlm_table', '')
+    full_table_name = f"{catalog}.{schema}.{table}"
+    st.markdown(f"**Table:** `{full_table_name}` | **SQL Warehouse:** `{SQL_WAREHOUSE}`")
     
     # Add refresh button for the table data
     col1, col2 = st.columns([1, 4])
