@@ -1,297 +1,381 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Optimized PDF Page Splitting Pipeline
+# MAGIC # OCR Processing with Nanonets API
 # MAGIC 
-# MAGIC This notebook efficiently processes PDFs from a Delta table and splits them into individual pages as PNG images.
+# MAGIC This notebook processes PDF page images extracted from the previous notebook and converts them to text using a Nanonets OCR model via OpenAI-compatible API.
 # MAGIC 
-# MAGIC ## Key Optimizations Made:
-# MAGIC - **Removed artificial groupBy**: Eliminated unnecessary shuffling from `groupby("batch_id").applyInPandas()`
-# MAGIC - **Direct Delta table reading**: Read from structured Delta table instead of binary file format
-# MAGIC - **Simplified pandas UDF**: Use `pandas_udf` directly instead of complex grouping
-# MAGIC - **Reduced memory usage**: Removed 4x memory overhead from high-resolution image generation
-# MAGIC - **Eliminated external dependencies**: Self-contained processing functions
-# MAGIC 
-# MAGIC ## Input Schema:
+# MAGIC ## Input Schema (from previous notebook):
 # MAGIC ```
-# MAGIC root
-# MAGIC |-- file_name: string
-# MAGIC |-- volume_path: string  
-# MAGIC |-- file_extension: string
+# MAGIC |-- doc_id: string
+# MAGIC |-- source_filename: string  
+# MAGIC |-- page_number: integer
+# MAGIC |-- page_image_png: binary     ← PNG image data
+# MAGIC |-- total_pages: integer
 # MAGIC |-- file_size_bytes: long
-# MAGIC |-- modification_time: timestamp
-# MAGIC |-- directory: string
-# MAGIC |-- binary_content: binary
+# MAGIC |-- processing_timestamp: string
+# MAGIC |-- metadata_json: string      ← Metadata as JSON string
 # MAGIC ```
+# MAGIC 
+# MAGIC ## Output: 
+# MAGIC Adds `ocr_text` column with extracted text/markdown content.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Configuration and Setup
-
-# COMMAND ----------
-
-# MAGIC %pip install pymupdf
-# MAGIC %restart_python
+# MAGIC ## Configuration and Imports
 
 # COMMAND ----------
 
 import os
-import pandas as pd
-import fitz  # PyMuPDF
-import logging
+import io
 import time
-from datetime import datetime
-import uuid
+import logging
+import requests
+import base64
+import pandas as pd
+import ast
+from typing import List, Dict, Optional
 
-from pyspark.sql.types import *
-from pyspark.sql import functions as F
-from pyspark.sql.functions import pandas_udf, col
+from pyspark.sql.functions import pandas_udf, col, lit
+from pyspark.sql.types import StringType
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Configuration
-CATALOG = "brian_gen_ai"
-INPUT_SCHEMA = "parsing_test" 
-SOURCE_TABLE = "document_store_blob"           # Your Delta table with PDFs
-OUTPUT_TABLE = "document_page_docs" # Output table for pages
+from PIL import Image
 
-# Processing settings
-USE_HIGH_RESOLUTION = False          # Set to True for 2x resolution (uses 4x memory)
-MAX_FILE_SIZE_MB = 50               # Skip files larger than this
+# Configuration - Updated to match previous notebook output
+CATALOG = 'brian_gen_ai'
+SCHEMA = 'parsing_test'
+SOURCE_TABLE = 'document_store_blob'    # Output from previous notebook
+OUTPUT_TABLE = 'document_store_ocr'     # Final table with OCR results
 
-print(f"Source: {CATALOG}.{INPUT_SCHEMA}.{SOURCE_TABLE}")
-print(f"Output: {CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}")
-print(f"High resolution: {USE_HIGH_RESOLUTION}")
+MODEL_NAME = 'nanonets/Nanonets-OCR-s'
+
+print(f"Source: {CATALOG}.{SCHEMA}.{SOURCE_TABLE}")
+print(f"Output: {CATALOG}.{SCHEMA}.{OUTPUT_TABLE}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Helper Functions
-# MAGIC 
-# MAGIC Simple, self-contained functions for PDF processing without external dependencies.
+# MAGIC ## Setup Logging and API Configuration
 
 # COMMAND ----------
 
-def generate_doc_id(filename: str) -> str:
-    """Generate a unique document ID from filename and timestamp"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{filename}_{timestamp}_{str(uuid.uuid4())[:8]}"
-
-def create_page_metadata(filename: str, filepath: str, file_size: int, total_pages: int, pdf_metadata: dict) -> dict:
-    """Create simplified metadata structure"""
-    return {
-        "source_filename": filename,
-        "source_filepath": filepath, 
-        "file_size_bytes": file_size,
-        "total_pages": total_pages,
-        "processing_timestamp": datetime.now().isoformat(),
-        "pdf_title": pdf_metadata.get("title", ""),
-        "pdf_author": pdf_metadata.get("author", ""),
-        "pdf_subject": pdf_metadata.get("subject", "")
-    }
-
-# Set up logging
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# COMMAND ----------
+# Suppress noisy logging messages
+logging.getLogger('py4j.clientserver').setLevel(logging.WARNING)
 
-# MAGIC %md
-# MAGIC ## PDF Processing Function
-# MAGIC 
-# MAGIC This function efficiently processes PDF binary data and extracts pages as PNG images.
-# MAGIC Uses `mapInPandas` to handle variable output rows (1 PDF → multiple pages).
-# MAGIC 
-# MAGIC **Performance Notes:**
-# MAGIC - Processes PDFs in parallel across partitions
-# MAGIC - Uses standard resolution by default (set `USE_HIGH_RESOLUTION=True` for 2x resolution)
-# MAGIC - Includes error handling for corrupted/problematic PDFs
-# MAGIC - Returns structured data with consistent schema
-
-# COMMAND ----------
-
-# Define output schema for the processing function
-pdf_pages_schema = StructType([
-    StructField("doc_id", StringType(), True),
-    StructField("source_filename", StringType(), True),
-    StructField("page_number", IntegerType(), True),
-    StructField("page_image_png", BinaryType(), True),
-    StructField("total_pages", IntegerType(), True),
-    StructField("file_size_bytes", LongType(), True),
-    StructField("processing_timestamp", StringType(), True),
-    StructField("metadata_json", StringType(), True)
-])
-
-def extract_pdf_pages_batch(pdf_batch: pd.DataFrame) -> pd.DataFrame:
-    """
-    Extract pages from PDF binary data as PNG images.
-    
-    Input DataFrame columns: file_name, volume_path, binary_content, file_size_bytes
-    Returns: DataFrame with one row per page (variable number of output rows)
-    """
-    results = []
-    
-    for idx, row in pdf_batch.iterrows():
-        filename = row['file_name']
-        filepath = row['volume_path'] 
-        binary_content = row['binary_content']
-        file_size = row['file_size_bytes']
-        
-        try:
-            # Skip if no binary content
-            if binary_content is None or len(binary_content) == 0:
-                logger.warning(f"No binary content for {filename}")
-                continue
-                
-            # Skip very large files  
-            if file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-                logger.warning(f"Skipping large file {filename}: {file_size/1024/1024:.1f}MB")
-                continue
-            
-            # Open PDF from binary data
-            doc = fitz.open(stream=binary_content, filetype="pdf")
-            
-            if len(doc) == 0:
-                logger.warning(f"PDF has no pages: {filename}")
-                doc.close()
-                continue
-            
-            # Generate document ID and metadata
-            doc_id = generate_doc_id(filename)
-            pdf_metadata = doc.metadata if doc.metadata else {}
-            total_pages = len(doc)
-            
-            metadata = create_page_metadata(
-                filename, filepath, file_size, total_pages, pdf_metadata
-            )
-            
-            # Process each page
-            for page_num in range(total_pages):
-                try:
-                    page = doc[page_num]
-                    
-                    # Create page image
-                    if USE_HIGH_RESOLUTION:
-                        # High resolution (2x) - uses 4x memory
-                        matrix = fitz.Matrix(2, 2)
-                        pix = page.get_pixmap(matrix=matrix, alpha=False)
-                    else:
-                        # Standard resolution
-                        pix = page.get_pixmap(alpha=False)
-                    
-                    # Convert to PNG bytes
-                    img_bytes = pix.pil_tobytes(format="PNG")
-                    
-                    results.append({
-                        "doc_id": doc_id,
-                        "source_filename": filename,
-                        "page_number": page_num + 1,  # 1-indexed
-                        "page_image_png": img_bytes,
-                        "total_pages": total_pages,
-                        "file_size_bytes": file_size,
-                        "processing_timestamp": datetime.now().isoformat(),
-                        "metadata_json": str(metadata)
-                    })
-                    
-                except Exception as page_error:
-                    logger.error(f"Error processing page {page_num + 1} of {filename}: {str(page_error)}")
-                    continue
-            
-            doc.close()
-            logger.info(f"Successfully processed {filename}: {total_pages} pages")
-            
-        except Exception as e:
-            logger.error(f"Error processing PDF {filename}: {str(e)}")
-            continue
-    
-    # Return results as DataFrame
-    if not results:
-        # Return empty DataFrame with correct schema
-        return pd.DataFrame(columns=[field.name for field in pdf_pages_schema.fields])
-    
-    return pd.DataFrame(results)
+class OpenAIAPIConfig:
+    """Configuration for OpenAI-spec API that hosts the Nanonets OCR model"""
+    def __init__(self):
+        # Get config from environment variables or set defaults
+        self.api_url = os.getenv("OPENAI_API_URL", "http://localhost:8000/v1")
+        self.api_key = os.getenv("OPENAI_API_KEY", "")
+        self.model_name = os.getenv("OPENAI_MODEL_NAME", MODEL_NAME)
+        self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "4096"))
+        self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.0"))
+        self.timeout = int(os.getenv("OPENAI_TIMEOUT", "300"))  # 5 minutes
+        self.max_retries = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
+        self.max_workers = int(os.getenv("OPENAI_MAX_WORKERS", "3"))  # Reduced for stability
+        self.rate_limit_delay = float(os.getenv("OPENAI_RATE_LIMIT_DELAY", "0.5"))  # Increased delay
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Data Loading and Validation
-# MAGIC 
-# MAGIC Load PDF files from the Delta table and validate the data before processing.
 
 # COMMAND ----------
 
-# Load source data
-print("=== LOADING SOURCE DATA ===")
-source_df = spark.table(f"{CATALOG}.{INPUT_SCHEMA}.{SOURCE_TABLE}")
+# Load the PDF pages from previous notebook
+print("=== LOADING PDF PAGES DATA ===")
+pages_df = spark.table(f"{CATALOG}.{SCHEMA}.{SOURCE_TABLE}")
 
 # Basic validation
-total_files = source_df.count()
-pdf_files = source_df.filter(col("file_extension") == ".pdf")
-pdf_count = pdf_files.count()
+total_pages = pages_df.count()
+unique_docs = pages_df.select("doc_id").distinct().count()
 
-print(f"Total files in source table: {total_files:,}")
-print(f"PDF files: {pdf_count:,}")
+print(f"Total pages to process: {total_pages:,}")
+print(f"Unique documents: {unique_docs:,}")
+print(f"Average pages per document: {total_pages/unique_docs:.1f}")
 
-if pdf_count == 0:
-    raise ValueError("No PDF files found in source table")
+# Sample the data structure
+print("\n=== SAMPLE DATA STRUCTURE ===")
+sample_data = pages_df.select(
+    "doc_id", 
+    "source_filename", 
+    "page_number", 
+    "total_pages",
+    "LENGTH(page_image_png) as image_size_bytes"
+).limit(5)
 
-# COMMAND ----------
-
-# Data quality checks
-print("=== DATA QUALITY ANALYSIS ===")
-
-# Check for missing binary content
-missing_content = pdf_files.filter(col("binary_content").isNull()).count()
-print(f"PDFs missing binary content: {missing_content}")
-
-# Size distribution
-size_stats = pdf_files.select(
-    F.min("file_size_bytes").alias("min_size"),
-    F.max("file_size_bytes").alias("max_size"), 
-    F.avg("file_size_bytes").alias("avg_size"),
-    F.count("*").alias("total_count")
-).collect()[0]
-
-print(f"File size stats:")
-print(f"  Min: {size_stats['min_size']:,} bytes ({size_stats['min_size']/1024/1024:.1f} MB)")
-print(f"  Max: {size_stats['max_size']:,} bytes ({size_stats['max_size']/1024/1024:.1f} MB)")
-print(f"  Avg: {size_stats['avg_size']:,.0f} bytes ({size_stats['avg_size']/1024/1024:.1f} MB)")
-
-# Filter to files we'll actually process
-processable_files = pdf_files.filter(
-    (col("binary_content").isNotNull()) &
-    (col("file_size_bytes") <= MAX_FILE_SIZE_MB * 1024 * 1024)
-)
-
-processable_count = processable_files.count()
-print(f"Files eligible for processing: {processable_count:,}")
+display(sample_data)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## PDF Processing Execution
+# MAGIC ## OCR Processing Functions
 # MAGIC 
-# MAGIC Process all eligible PDF files to extract pages using `mapInPandas()`.
-# MAGIC 
-# MAGIC **Why mapInPandas():**
-# MAGIC - Allows variable output rows (1 PDF → multiple pages)
-# MAGIC - Processes in parallel across partitions  
-# MAGIC - More efficient than groupBy().applyInPandas() for this use case
-# MAGIC - No artificial grouping needed
+# MAGIC These functions handle the conversion of PNG page images to text using the Nanonets OCR model.
 
 # COMMAND ----------
 
-print("=== STARTING PDF PAGE EXTRACTION ===")
+def encode_image_to_base64(image: Image.Image) -> str:
+    """Convert PIL Image to base64 string for API transmission"""
+    buffer = io.BytesIO()
+    # Convert to RGB if necessary (removes transparency)
+    if image.mode in ('RGBA', 'LA', 'P'):
+        image = image.convert('RGB')
+    image.save(buffer, format='JPEG', quality=85, optimize=True)
+    buffer.seek(0)
+    return base64.b64encode(buffer.read()).decode('utf-8')
+
+def make_api_request(image: Image.Image, config: OpenAIAPIConfig, image_path: str = "unknown") -> Optional[str]:
+    """
+    Make a single OCR API request for one page image.
+    
+    Args:
+        image: PIL Image object
+        config: API configuration
+        image_path: Identifier for logging
+        
+    Returns:
+        Extracted text/markdown or None if failed
+    """
+    
+    # Detailed OCR prompt for high-quality extraction
+    prompt = """Extract the text from the above document as if you were reading it naturally. Return the tables in html format. Return the equations in LaTeX representation. If there is an image in the document and image caption is not present, add a small description of the image inside the <img></img> tag; otherwise, add the image caption inside <img></img>. Watermarks should be wrapped in brackets. Ex: <watermark>OFFICIAL COPY</watermark>. Page numbers should be wrapped in brackets. Ex: <page_number>14</page_number> or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for check boxes."""
+    
+    try:
+        # Encode image for API
+        base64_image = encode_image_to_base64(image)
+        
+        # Prepare API request
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {config.api_key}"
+        }
+        
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant that specializes in OCR and document analysis."
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+            }
+        ]
+        
+        payload = {
+            "model": config.model_name,
+            "messages": messages,
+            "max_tokens": config.max_tokens,
+            "temperature": config.temperature
+        }
+        
+        # Retry logic with exponential backoff
+        for attempt in range(config.max_retries + 1):
+            try:
+                response = requests.post(
+                    f"{config.api_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=(30, config.timeout)
+                )
+                
+                response.raise_for_status()
+                result = response.json()
+                
+                if 'choices' in result and len(result['choices']) > 0:
+                    return result['choices'][0]['message']['content']
+                else:
+                    logger.warning(f"No valid response for {image_path}")
+                    return None
+                    
+            except requests.exceptions.Timeout:
+                if attempt < config.max_retries:
+                    sleep_time = 2 ** attempt
+                    logger.warning(f"Request timeout for {image_path}, retrying in {sleep_time}s...")
+                    time.sleep(sleep_time)
+                else:
+                    logger.error(f"Final timeout for {image_path}")
+                    return None
+                    
+            except requests.exceptions.RequestException as e:
+                logger.error(f"API request failed for {image_path}: {str(e)}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"Error processing image {image_path}: {str(e)}")
+        return None
+
+def prepare_api_inputs(page_images: List[bytes], metadata_list: List[str]) -> List[Dict]:
+    """
+    Prepare image data and metadata for API processing.
+    
+    Args:
+        page_images: List of PNG image bytes from page_image_png column
+        metadata_list: List of JSON metadata strings from metadata_json column
+        
+    Returns:
+        List of prepared input dictionaries
+    """
+    inputs = []
+    
+    for i, (image_bytes, metadata_str) in enumerate(zip(page_images, metadata_list)):
+        try:
+            # Parse metadata to get source info
+            try:
+                metadata = ast.literal_eval(metadata_str)
+                image_path = f"{metadata.get('source_filename', 'unknown')}_page_{i+1}"
+            except:
+                image_path = f'image_{i}'
+            
+            # Convert PNG bytes to PIL Image
+            if image_bytes and len(image_bytes) > 0:
+                image = Image.open(io.BytesIO(image_bytes))
+                inputs.append({
+                    'image': image,
+                    'image_path': image_path,
+                    'index': i
+                })
+            else:
+                logger.warning(f"Empty image data for {image_path}")
+                inputs.append({
+                    'image': None,
+                    'image_path': image_path,
+                    'index': i
+                })
+            
+        except Exception as e:
+            logger.error(f"Error preparing input {i}: {e}")
+            inputs.append({
+                'image': None,
+                'image_path': f'failed_image_{i}',
+                'index': i
+            })
+    
+    return inputs
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Pandas UDF for Batch OCR Processing
+# MAGIC 
+# MAGIC This UDF processes batches of page images concurrently using the Nanonets OCR API.
+
+# COMMAND ----------
+
+@pandas_udf(returnType=StringType())
+def nanonets_ocr_udf(page_images: pd.Series, metadata_series: pd.Series) -> pd.Series:
+    """
+    High-performance pandas UDF for batch OCR processing using Nanonets via OpenAI-spec API.
+    
+    Args:
+        page_images: Series of PNG image bytes (from page_image_png column)
+        metadata_series: Series of JSON metadata strings (from metadata_json column)
+        
+    Returns:
+        Series of extracted text/markdown content
+    """
+    
+    batch_size = len(page_images)
+    logger.info(f"Processing OCR batch of {batch_size} images")
+    
+    # Initialize API config
+    config = OpenAIAPIConfig()
+    
+    # Set API key (you may want to configure this differently)
+    if not config.api_key:
+        config.api_key = ""  # Set your API key here or via environment variable
+        logger.warning("API key not configured - set OPENAI_API_KEY environment variable")
+    
+    # Prepare inputs
+    inputs = prepare_api_inputs(
+        page_images=page_images.tolist(),
+        metadata_list=metadata_series.tolist()
+    )
+    
+    # Filter valid inputs
+    valid_inputs = [inp for inp in inputs if inp['image'] is not None]
+    
+    if not valid_inputs:
+        logger.warning("No valid images to process in this batch")
+        return pd.Series([None] * batch_size)
+    
+    # Initialize results array
+    results = [None] * batch_size
+    
+    try:
+        logger.info(f"Processing {len(valid_inputs)} valid images with {config.max_workers} workers")
+        
+        # Process images concurrently with rate limiting
+        with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
+            # Submit requests with rate limiting
+            future_to_input = {}
+            for inp in valid_inputs:
+                time.sleep(config.rate_limit_delay)  # Rate limiting
+                future = executor.submit(make_api_request, inp['image'], config, inp['image_path'])
+                future_to_input[future] = inp
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_input):
+                inp = future_to_input[future]
+                try:
+                    result = future.result()
+                    results[inp['index']] = result
+                except Exception as e:
+                    logger.error(f"Error processing {inp['image_path']}: {e}")
+                    results[inp['index']] = None
+        
+        successful_results = sum(1 for r in results if r is not None)
+        logger.info(f"OCR batch completed: {successful_results}/{batch_size} successful")
+        
+        return pd.Series(results)
+        
+    except Exception as e:
+        logger.error(f"Error in OCR batch processing: {e}")
+        return pd.Series([None] * batch_size)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Execute OCR Processing
+# MAGIC 
+# MAGIC Process all page images to extract text content using the Nanonets OCR model.
+
+# COMMAND ----------
+
+print("=== STARTING OCR PROCESSING ===")
 start_time = time.time()
 
-# Process PDFs using mapInPandas (allows variable output rows)
-# This is the correct approach when 1 input row produces multiple output rows
-pages_df = processable_files.select(
-    col("file_name"),
-    col("volume_path"),
-    col("binary_content"),
-    col("file_size_bytes")
-).repartition(8).mapInPandas(  # Repartition for better parallelism
-    extract_pdf_pages_batch,
-    schema=pdf_pages_schema
+# Apply OCR UDF to extract text from page images
+# Updated column names to match actual schema: page_image_png and metadata_json
+ocr_results_df = pages_df.withColumn(
+    'ocr_text', 
+    nanonets_ocr_udf(col('page_image_png'), col('metadata_json'))
+)
+
+# Add processing metadata
+ocr_results_df = ocr_results_df.withColumn(
+    'ocr_timestamp', 
+    lit(time.strftime("%Y-%m-%d %H:%M:%S"))
+).withColumn(
+    'ocr_model',
+    lit(MODEL_NAME)
 )
 
 # COMMAND ----------
@@ -299,164 +383,128 @@ pages_df = processable_files.select(
 # MAGIC %md
 # MAGIC ## Save Results
 # MAGIC 
-# MAGIC Save the extracted pages to a Delta table partitioned by document ID for efficient querying.
+# MAGIC Save the OCR results to a new Delta table for further analysis.
 
 # COMMAND ----------
 
-print("=== SAVING RESULTS ===")
+print("=== SAVING OCR RESULTS ===")
 
-# Save to Delta table with partitioning for better query performance
-(pages_df
+# Save to Delta table
+(ocr_results_df
  .write
  .mode("overwrite")
  .option("overwriteSchema", "true")
  .partitionBy("doc_id")
- .saveAsTable(f"{CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}")
+ .saveAsTable(f"{CATALOG}.{SCHEMA}.{OUTPUT_TABLE}")
 )
 
 end_time = time.time()
 processing_time = end_time - start_time
 
+print(f"✅ OCR processing completed!")
+print(f"Results saved to: {CATALOG}.{SCHEMA}.{OUTPUT_TABLE}")
+
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Processing Summary
-# MAGIC 
-# MAGIC Display summary statistics and performance metrics for the processing job.
+# MAGIC ## Processing Summary and Results
 
 # COMMAND ----------
 
-print("=== PROCESSING SUMMARY ===")
+print("=== OCR PROCESSING SUMMARY ===")
 
 # Get final counts
-final_pages_count = spark.table(f"{CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}").count()
-final_docs_count = spark.table(f"{CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}").select("doc_id").distinct().count()
+total_pages_processed = spark.table(f"{CATALOG}.{SCHEMA}.{OUTPUT_TABLE}").count()
+successful_ocr = spark.table(f"{CATALOG}.{SCHEMA}.{OUTPUT_TABLE}").filter(col("ocr_text").isNotNull()).count()
+failed_ocr = total_pages_processed - successful_ocr
 
-print(f"Processing completed successfully!")
-print(f"")
-print(f"Input Statistics:")
-print(f"  - PDF files processed: {processable_count:,}")
+print(f"Processing Statistics:")
+print(f"  - Total pages processed: {total_pages_processed:,}")
+print(f"  - Successful OCR extractions: {successful_ocr:,}")
+print(f"  - Failed OCR extractions: {failed_ocr:,}")
+print(f"  - Success rate: {(successful_ocr/total_pages_processed)*100:.1f}%")
 print(f"  - Total processing time: {processing_time:.1f} seconds")
-print(f"")
-print(f"Output Statistics:")
-print(f"  - Documents created: {final_docs_count:,}")
-print(f"  - Total pages extracted: {final_pages_count:,}")
-print(f"  - Average pages per document: {final_pages_count/final_docs_count:.1f}")
-print(f"")
-print(f"Performance Metrics:")
-print(f"  - Files per second: {processable_count/processing_time:.2f}")
-print(f"  - Pages per second: {final_pages_count/processing_time:.2f}")
+print(f"  - Pages per second: {total_pages_processed/processing_time:.2f}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Sample Results
-# MAGIC 
-# MAGIC Display a sample of the extracted pages to verify the processing worked correctly.
+# MAGIC ## Sample OCR Results
 
 # COMMAND ----------
 
-# Show sample results
-sample_results = spark.sql(f"""
+# Show sample OCR results
+sample_ocr = spark.sql(f"""
 SELECT 
-    source_filename,
     doc_id,
+    source_filename,
     page_number,
     total_pages,
-    file_size_bytes,
-    LENGTH(page_image_png) as image_size_bytes,
-    processing_timestamp
-FROM {CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}
+    CASE 
+        WHEN ocr_text IS NOT NULL THEN 'SUCCESS'
+        ELSE 'FAILED'
+    END as ocr_status,
+    LENGTH(ocr_text) as text_length,
+    LEFT(ocr_text, 200) as text_preview
+FROM {CATALOG}.{SCHEMA}.{OUTPUT_TABLE}
 ORDER BY source_filename, page_number
 LIMIT 10
 """)
 
-display(sample_results)
+print("=== SAMPLE OCR RESULTS ===")
+display(sample_ocr)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Validation Queries
-# MAGIC 
-# MAGIC Run some validation queries to ensure data quality and completeness.
+# MAGIC ## Quality Analysis
 
 # COMMAND ----------
 
-print("=== DATA VALIDATION ===")
-
-# Check for any processing errors (empty results)
-validation_df = spark.sql(f"""
+# Analyze OCR quality by text length and success rates
+quality_analysis = spark.sql(f"""
 SELECT 
-    COUNT(DISTINCT doc_id) as unique_documents,
-    COUNT(*) as total_pages,
-    AVG(total_pages) as avg_pages_per_doc,
-    MIN(page_number) as min_page_num,
-    MAX(page_number) as max_page_num,
-    AVG(LENGTH(page_image_png)) as avg_image_size_bytes
-FROM {CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}
-""")
-
-display(validation_df)
-
-# COMMAND ----------
-
-# Check for any documents with missing pages (gaps in page numbering)
-page_gaps = spark.sql(f"""
-WITH page_sequences AS (
-    SELECT 
-        doc_id,
-        source_filename,
-        total_pages,
-        COUNT(*) as actual_pages,
-        MIN(page_number) as min_page,
-        MAX(page_number) as max_page
-    FROM {CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}
-    GROUP BY doc_id, source_filename, total_pages
-)
-SELECT 
-    source_filename,
-    total_pages,
-    actual_pages,
-    min_page,
-    max_page,
     CASE 
-        WHEN actual_pages != total_pages THEN 'PAGE_COUNT_MISMATCH'
-        WHEN min_page != 1 THEN 'MISSING_FIRST_PAGES'
-        WHEN max_page != total_pages THEN 'MISSING_LAST_PAGES'
-        ELSE 'OK'
-    END as status
-FROM page_sequences
-WHERE actual_pages != total_pages OR min_page != 1 OR max_page != total_pages
-ORDER BY source_filename
+        WHEN LENGTH(ocr_text) = 0 OR ocr_text IS NULL THEN 'NO_TEXT'
+        WHEN LENGTH(ocr_text) < 100 THEN 'SHORT_TEXT'
+        WHEN LENGTH(ocr_text) < 500 THEN 'MEDIUM_TEXT'
+        WHEN LENGTH(ocr_text) < 2000 THEN 'LONG_TEXT'
+        ELSE 'VERY_LONG_TEXT'
+    END as text_category,
+    COUNT(*) as page_count,
+    AVG(LENGTH(ocr_text)) as avg_text_length,
+    MIN(LENGTH(ocr_text)) as min_text_length,
+    MAX(LENGTH(ocr_text)) as max_text_length
+FROM {CATALOG}.{SCHEMA}.{OUTPUT_TABLE}
+GROUP BY 1
+ORDER BY page_count DESC
 """)
 
-print("Documents with page issues:")
-display(page_gaps)
+print("=== OCR QUALITY ANALYSIS ===")
+display(quality_analysis)
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ---
 # MAGIC 
-# MAGIC ## Processing Complete! 
+# MAGIC ## Processing Complete!
 # MAGIC 
-# MAGIC ### Key Improvements Made:
-# MAGIC 1. **Used mapInPandas()**: Correctly handles variable output rows (1 PDF → multiple pages)
-# MAGIC 2. **Direct Delta table source**: Read directly from structured Delta table instead of binary file format
-# MAGIC 3. **Memory optimization**: Made high-resolution processing optional to reduce memory usage
-# MAGIC 4. **Better error handling**: Individual PDF failures don't stop the entire process
-# MAGIC 5. **Self-contained**: Removed external module dependencies
-# MAGIC 6. **Performance monitoring**: Added detailed timing and throughput metrics
-# MAGIC 7. **Proper partitioning**: Added repartitioning for better parallelism
+# MAGIC ### Key Changes Made:
+# MAGIC 1. **Updated table reference**: Changed from `split_pages` to `document_store_blob`
+# MAGIC 2. **Fixed column names**: Updated `page_bytes` → `page_image_png` and `metadata` → `metadata_json`
+# MAGIC 3. **Improved error handling**: Better logging and retry mechanisms
+# MAGIC 4. **Enhanced documentation**: Clear markdown sections explaining each step
+# MAGIC 5. **Quality analysis**: Added OCR quality assessment
+# MAGIC 6. **Performance tuning**: Reduced concurrent workers and increased rate limiting for stability
 # MAGIC 
 # MAGIC ### Output Schema:
-# MAGIC ```
-# MAGIC |-- doc_id: string
-# MAGIC |-- source_filename: string  
-# MAGIC |-- page_number: integer
-# MAGIC |-- page_image_png: binary
-# MAGIC |-- total_pages: integer
-# MAGIC |-- file_size_bytes: long
-# MAGIC |-- processing_timestamp: string
-# MAGIC |-- metadata_json: string
-# MAGIC ```
+# MAGIC The final table includes all original columns plus:
+# MAGIC - `ocr_text`: Extracted text/markdown content
+# MAGIC - `ocr_timestamp`: When OCR was performed  
+# MAGIC - `ocr_model`: Model used for OCR
+# MAGIC 
+# MAGIC ### Next Steps:
+# MAGIC - Review OCR quality and adjust API parameters if needed
+# MAGIC - Consider post-processing to clean up extracted text
+# MAGIC - Implement document reconstruction by combining pages
