@@ -8,6 +8,8 @@ import base64
 import logging
 from streamlit_pdf_viewer import pdf_viewer
 import pandas as pd
+import json
+from urllib.parse import urlparse
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
@@ -16,6 +18,12 @@ logger = logging.getLogger(__name__)
 # Get environment variables
 VOLUME_PATH = os.environ.get("DATABRICKS_VOLUME", "")
 SQL_WAREHOUSE = os.environ.get("DATABRICKS_SQL_WAREHOUSE", "")
+DATABRICKS_APP_PRINCIPAL = os.environ.get("DATABRICKS_CLIENT_ID", "")
+DATABRICKS_APP_PRINCIPAL_SECRET = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
+HOST_PATH = os.environ.get("DATABRICKS_HOST", "")
+
+### need to fix how to get this properly
+URL_BASEPATH = "https://adb-984752964297111.11.azuredatabricks.net" # f"{urlparse(HOST_PATH).scheme}://{urlparse(HOST_PATH).netloc}"
 
 # Databricks configuration
 cfg = Config()
@@ -27,7 +35,7 @@ with st.sidebar:
     st.header("Navigation")
     page = st.selectbox(
         "Select Page",
-        ["Home", "View Volumes", "View Markdown Extraction", "View VLM Extraction"],
+        ["Home", "View Volumes", "View Markdown Extraction", "View VLM Extraction", "Vector Search"],
         index=0
     )
     st.divider()
@@ -93,6 +101,41 @@ def get_volumes(catalog, schema):
             return result['volume_name'].tolist() if 'volume_name' in result.columns else []
     except Exception as e:
         logger.error(f"Error listing volumes in {catalog}.{schema}: {e}")
+        return []
+
+def get_vector_search_endpoints():
+    """Get list of vector search endpoints"""
+    try:
+        from databricks.vector_search.client import VectorSearchClient
+        vsc = VectorSearchClient(disable_notice=True,
+                                 workspace_url=URL_BASEPATH,
+                                 service_principal_client_id=DATABRICKS_APP_PRINCIPAL,
+                                 service_principal_client_secret=DATABRICKS_APP_PRINCIPAL_SECRET)
+        endpoints = vsc.list_endpoints()
+        return [endpoint['name'] for endpoint in endpoints.get('endpoints', [])] if endpoints else []
+    except ImportError:
+        logger.error("databricks-vectorsearch package not installed. Run: pip install databricks-vectorsearch")
+        return []
+    except Exception as e:
+        logger.error(f"Error listing vector search endpoints: {e}")
+        return []
+
+def get_vector_search_indexes(endpoint_name):
+    """Get list of vector search indexes for an endpoint"""
+    try:
+        from databricks.vector_search.client import VectorSearchClient
+        vsc = VectorSearchClient(disable_notice=True,
+                                 workspace_url=URL_BASEPATH,
+                                 service_principal_client_id=DATABRICKS_APP_PRINCIPAL,
+                                 service_principal_client_secret=DATABRICKS_APP_PRINCIPAL_SECRET)
+        
+        indexes = vsc.list_indexes(name=endpoint_name)
+        return [index['name'] for index in indexes.get('vector_indexes', [])] if indexes else []
+    except ImportError:
+        logger.error("databricks-vectorsearch package not installed. Run: pip install databricks-vectorsearch")
+        return []
+    except Exception as e:
+        logger.error(f"Error listing vector search indexes for endpoint {endpoint_name}: {e}")
         return []
 
 # Cache the SQL connection - following official Databricks app template pattern
@@ -248,6 +291,56 @@ def get_vlm_document_pages(source_filename):
     except Exception as e:
         logger.error(f"Error querying VLM document pages from {full_table_name}: {e}")
         return pd.DataFrame()
+
+# Vector Search Functions
+def query_vector_search(query_text, num_results=5):
+    """Query the vector search index"""
+    if not st.session_state.get('config_saved'):
+        return []
+    
+    endpoint_name = st.session_state.get('selected_vs_endpoint', '')
+    index_name = st.session_state.get('selected_vs_index', '')
+    
+    if not endpoint_name or not index_name:
+        return []
+    
+    try:
+        from databricks.vector_search.client import VectorSearchClient
+        vsc = VectorSearchClient(disable_notice=True,
+                                 workspace_url=URL_BASEPATH,
+                                 service_principal_client_id=DATABRICKS_APP_PRINCIPAL,
+                                 service_principal_client_secret=DATABRICKS_APP_PRINCIPAL_SECRET)
+        
+        # Get the index object
+        index = vsc.get_index(endpoint_name=endpoint_name, index_name=index_name)
+        
+        index_columns = [x['key'] for x in index.scan(num_results=1)['data'][0]['fields']]
+        
+        # Query the vector search index
+        results = index.similarity_search(
+            query_text=query_text,
+            columns=index_columns,  # Get all columns
+            num_results=num_results
+        )
+        
+        # Convert results to a more manageable format
+        ### this bit needs fixing
+        
+        formatted_results = []
+        if results and 'result' in results and 'data_array' in results['result']:
+            for item in results['result']['data_array']:
+                list_of_dicts = [dict(zip(index_columns, row)) for row in results['result']['data_array']]
+    
+                for item in list_of_dicts:
+                    formatted_results.append(item)
+        
+        return formatted_results
+    except ImportError:
+        logger.error("databricks-vectorsearch package not installed. Run: pip install databricks-vectorsearch")
+        return []
+    except Exception as e:
+        logger.error(f"Error querying vector search index {index_name}: {e}")
+        return []
 
 # List files in the given volume path
 def list_files_in_volume():
@@ -552,6 +645,51 @@ if page == "Home":
                     vlm_full_name = f"{selected_catalog}.{selected_schema}.{vlm_table}"
                     st.code(vlm_full_name)
                 
+                # Vector Search Configuration Section
+                st.subheader("🔍 Vector Search Configuration")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Vector Search Endpoint:**")
+                    # Load vector search endpoints
+                    with st.spinner("Loading vector search endpoints..."):
+                        vs_endpoints = get_vector_search_endpoints()
+                    
+                    if vs_endpoints:
+                        selected_vs_endpoint = st.selectbox(
+                            "Select Vector Search Endpoint:",
+                            options=vs_endpoints,
+                            index=vs_endpoints.index(st.session_state.get('selected_vs_endpoint', vs_endpoints[0])) if st.session_state.get('selected_vs_endpoint') in vs_endpoints else 0,
+                            key="vs_endpoint_select"
+                        )
+                        st.session_state['selected_vs_endpoint'] = selected_vs_endpoint
+                        st.code(f"Endpoint: {selected_vs_endpoint}")
+                    else:
+                        st.warning("No vector search endpoints found. Make sure the `databricks-vectorsearch` package is installed.")
+                        st.code("pip install databricks-vectorsearch")
+                        selected_vs_endpoint = None
+                
+                with col2:
+                    st.markdown("**Vector Search Index:**")
+                    if selected_vs_endpoint:
+                        # Load vector search indexes for selected endpoint
+                        with st.spinner(f"Loading indexes for {selected_vs_endpoint}..."):
+                            vs_indexes = get_vector_search_indexes(selected_vs_endpoint)
+                        
+                        if vs_indexes:
+                            selected_vs_index = st.selectbox(
+                                "Select Vector Search Index:",
+                                options=vs_indexes,
+                                index=vs_indexes.index(st.session_state.get('selected_vs_index', vs_indexes[0])) if st.session_state.get('selected_vs_index') in vs_indexes else 0,
+                                key="vs_index_select"
+                            )
+                            st.session_state['selected_vs_index'] = selected_vs_index
+                            st.code(f"Index: {selected_vs_index}")
+                        else:
+                            st.warning(f"No indexes found for endpoint {selected_vs_endpoint}")
+                    else:
+                        st.warning("Please select a vector search endpoint first.")
+                
                 # Save configuration
                 st.markdown("---")
                 if st.button("💾 Save Configuration"):
@@ -569,6 +707,8 @@ if page == "Home":
                         st.write(f"**Volume Path:** {st.session_state.get('constructed_volume_path', VOLUME_PATH)}")
                         st.write(f"**Markdown Table:** {markdown_full_name}")
                         st.write(f"**VLM Table:** {vlm_full_name}")
+                        st.write(f"**Vector Search Endpoint:** {st.session_state.get('selected_vs_endpoint', 'Not configured')}")
+                        st.write(f"**Vector Search Index:** {st.session_state.get('selected_vs_index', 'Not configured')}")
                         st.write(f"**SQL Warehouse:** {SQL_WAREHOUSE}")
             else:
                 st.warning(f"No tables found in {selected_catalog}.{selected_schema}")
@@ -977,3 +1117,130 @@ elif page == "View VLM Extraction":
     else:
         st.warning("No data found in the document_store_ocr table. Please check your SQL warehouse connection and table permissions.")
         st.info("Make sure the DATABRICKS_SQL_WAREHOUSE environment variable is set correctly.")
+
+# Page 4: Vector Search
+elif page == "Vector Search":
+    # Check if configuration is saved
+    if not st.session_state.get('config_saved'):
+        st.warning("⚠️ Please configure your catalog and tables on the Home page first.")
+        st.stop()
+    
+    st.title("Vector Search")
+    st.markdown("**Search through document content using semantic similarity**")
+    
+    # Show current vector search configuration
+    endpoint_name = st.session_state.get('selected_vs_endpoint', '')
+    index_name = st.session_state.get('selected_vs_index', '')
+    
+    if not endpoint_name or not index_name:
+        st.warning("⚠️ Please configure your Vector Search endpoint and index on the Home page first.")
+        st.stop()
+    
+    st.markdown(f"**Endpoint:** `{endpoint_name}` | **Index:** `{index_name}`")
+    
+    # Search interface
+    st.subheader("🔍 Semantic Search")
+    
+    # Search input
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        query_text = st.text_input(
+            "Enter your search query:",
+            placeholder="e.g., 'financial performance metrics', 'risk management strategies', 'customer satisfaction data'",
+            help="Enter natural language queries to find semantically similar content"
+        )
+    
+    with col2:
+        num_results = st.selectbox(
+            "Results:",
+            options=[5, 10, 15, 20],
+            index=0
+        )
+    
+    # Search button and results
+    if st.button("🔍 Search", type="primary") or query_text:
+        if query_text.strip():
+            with st.spinner("Searching..."):
+                results = query_vector_search(query_text, num_results)
+            
+            if results:
+                st.subheader(f"📋 Search Results ({len(results)} found)")
+                
+                # Display results
+                for i, result in enumerate(results, 1):
+                    with st.expander(f"Result {i}", expanded=(i <= 3)):
+                        # Display all fields in the result
+                        for key, value in result.items():
+                            st.markdown(f"**{key.replace('_', ' ').title()}:**")
+                            
+                            # Handle different value types
+                            if isinstance(value, (dict, list)):
+                                st.json(value)
+                            elif isinstance(value, str) and len(value) > 500:
+                                # For long text, show in a text area
+                                st.text_area(f"{key}", value=value, height=200, disabled=True, label_visibility="collapsed")
+                            else:
+                                st.write(value)
+                            
+                            st.markdown("---")
+                
+                # Simple statistics
+                st.markdown("---")
+                st.metric("Total Results", len(results))
+                
+            else:
+                st.warning("No results found for your query. Try different keywords or check your vector search configuration.")
+                # Check if it's a package issue
+                try:
+                    from databricks.vector_search.client import VectorSearchClient
+                except ImportError:
+                    st.error("❌ `databricks-vectorsearch` package not installed. Install it with: `pip install databricks-vectorsearch`")
+        else:
+            st.info("Please enter a search query to get started.")
+    
+    # Help section
+    with st.expander("💡 Search Tips", expanded=False):
+        st.markdown("""
+        **How to write effective search queries:**
+        
+        • **Use natural language**: Write queries as you would ask a question
+        • **Be specific**: Include key terms and concepts you're looking for
+        • **Use context**: Add context words to narrow down results
+        • **Try synonyms**: If no results, try alternative phrasings
+        
+        **Example queries:**
+        - "What are the main financial risks mentioned?"
+        - "Customer satisfaction scores and feedback"
+        - "Product performance metrics Q4"
+        - "Regulatory compliance requirements"
+        """)
+    
+    # Advanced options
+    with st.expander("⚙️ Advanced Options", expanded=False):
+        st.markdown("**Vector Search Configuration:**")
+        st.code(f"Endpoint: {endpoint_name}")
+        st.code(f"Index: {index_name}")
+        
+        st.markdown("**Requirements:**")
+        st.info("Make sure `databricks-vectorsearch` package is installed: `pip install databricks-vectorsearch`")
+        
+        if st.button("🔄 Test Connection"):
+            try:
+                from databricks.vector_search.client import VectorSearchClient
+                vsc = VectorSearchClient(disable_notice=True,
+                                         workspace_url=URL_BASEPATH,
+                                         service_principal_client_id=DATABRICKS_APP_PRINCIPAL,
+                                         service_principal_client_secret=DATABRICKS_APP_PRINCIPAL_SECRET)
+                # Try to get index info
+                index = vsc.get_index(endpoint_name=endpoint_name, index_name=index_name)
+                index_info = index.describe()
+                st.success("✅ Vector search connection successful!")
+                st.json({
+                    "index_type": index_info.get("index_type", "N/A"),
+                    "status": index_info.get("status", {}).get("detailed_state", "N/A"),
+                    "primary_key": index_info.get("primary_key", "N/A")
+                })
+            except ImportError:
+                st.error("❌ `databricks-vectorsearch` package not installed. Run: `pip install databricks-vectorsearch`")
+            except Exception as e:
+                st.error(f"❌ Connection failed: {str(e)}")

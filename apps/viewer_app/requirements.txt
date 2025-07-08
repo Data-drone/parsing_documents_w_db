@@ -1,4 +1,5 @@
 fsspec
 databricks-sdk 
+databricks-vectorsearch
 databricks-sql-connector
 streamlit-pdf-viewer
