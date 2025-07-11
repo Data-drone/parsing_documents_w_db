@@ -20,10 +20,9 @@ VOLUME_PATH = os.environ.get("DATABRICKS_VOLUME", "")
 SQL_WAREHOUSE = os.environ.get("DATABRICKS_SQL_WAREHOUSE", "")
 DATABRICKS_APP_PRINCIPAL = os.environ.get("DATABRICKS_CLIENT_ID", "")
 DATABRICKS_APP_PRINCIPAL_SECRET = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
-HOST_PATH = os.environ.get("DATABRICKS_HOST", "")
 
-### need to fix how to get this properly
-URL_BASEPATH = "https://adb-984752964297111.11.azuredatabricks.net" # f"{urlparse(HOST_PATH).scheme}://{urlparse(HOST_PATH).netloc}"
+BASEPATH = os.environ.get("DATABRICKS_HOST", "")
+URL_BASEPATH = f"https://{BASEPATH}" 
 
 # Databricks configuration
 cfg = Config()
@@ -39,6 +38,94 @@ with st.sidebar:
         index=0
     )
     st.divider()
+
+
+# Title bar
+st.markdown("""
+<style>
+    .title-bar {
+        background: linear-gradient(90deg, #1f77b4 0%, #ff7f0e 100%);
+        padding: 1rem 2rem;
+        margin: -1rem -1rem 2rem -1rem;
+        color: white;
+        border-radius: 0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .title-bar h1 {
+        margin: 0;
+        color: white !important;
+        font-size: 2rem;
+        font-weight: 600;
+    }
+    .title-bar .subtitle {
+        margin: 0.5rem 0 0 0;
+        color: rgba(255,255,255,0.9);
+        font-size: 1rem;
+    }
+    .title-bar .status-badge {
+        background: rgba(255,255,255,0.2);
+        padding: 0.25rem 0.75rem;
+        border-radius: 1rem;
+        font-size: 0.875rem;
+        margin-left: 1rem;
+    }
+    .title-bar .connection-status {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+    }
+    .status-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+    }
+    .status-connected {
+        background-color: #4CAF50;
+    }
+    .status-disconnected {
+        background-color: #f44336;
+    }
+    .status-warning {
+        background-color: #ff9800;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Create the title bar
+def create_title_bar():
+    # Check connection status
+    config_status = "✅ Configured" if st.session_state.get('config_saved') else "⚠️ Setup Required"
+    config_class = "status-connected" if st.session_state.get('config_saved') else "status-warning"
+    
+    # Get current configuration info
+    current_catalog = st.session_state.get('selected_catalog', 'Not set')
+    current_schema = st.session_state.get('selected_schema', 'Not set')
+    
+    st.markdown(f"""
+    <div class="title-bar">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div>
+                <h1>🗂️ Databricks Document Hub</h1>
+                <div class="subtitle">PDF Processing & Vector Search Platform</div>
+                <div class="connection-status">
+                    <span class="status-indicator {config_class}"></span>
+                    <span>{config_status}</span>
+                    <span class="status-badge">Catalog: {current_catalog}</span>
+                    <span class="status-badge">Schema: {current_schema}</span>
+                </div>
+            </div>
+            <div style="text-align: right; font-size: 0.875rem; opacity: 0.9;">
+                <div>SQL Warehouse: {SQL_WAREHOUSE[:20]}...</div>
+                <div>Page: {page}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Call the title bar function
+create_title_bar()
 
 # List files in the given volume path
 def list_files_in_volume():
@@ -429,6 +516,9 @@ def download_pdf_file(file_path):
 
 # Page 0: Home - Configuration
 if page == "Home":
+    
+    #logger.info(f"Host Path is: {HOST_PATH}")
+    
     st.title("Databricks Document Processing Hub")
     st.markdown("**Configure your Unity Catalog connection and data processing pipeline**")
     st.markdown(f"**Default Volume Path:** `{VOLUME_PATH}` | **SQL Warehouse:** `{SQL_WAREHOUSE}`")
@@ -1158,45 +1248,279 @@ elif page == "Vector Search":
         )
     
     # Search button and results
-    if st.button("🔍 Search", type="primary") or query_text:
-        if query_text.strip():
-            with st.spinner("Searching..."):
-                results = query_vector_search(query_text, num_results)
+if st.button("🔍 Search", type="primary") or query_text:
+    if query_text.strip():
+        with st.spinner("Searching..."):
+            results = query_vector_search(query_text, num_results)
+        
+        if results:
+            st.subheader(f"📋 Search Results ({len(results)} found)")
             
-            if results:
-                st.subheader(f"📋 Search Results ({len(results)} found)")
-                
-                # Display results
-                for i, result in enumerate(results, 1):
-                    with st.expander(f"Result {i}", expanded=(i <= 3)):
-                        # Display all fields in the result
+            # Display results in a more concise format
+            for i, result in enumerate(results, 1):
+                # Create a card-like container for each result
+                with st.container():
+                    # Main result card
+                    col1, col2 = st.columns([4, 1])
+                    
+                    with col1:
+                        # Result header with rank
+                        st.markdown(f"### 🔍 Result #{i}")
+                        
+                        # Extract and display key information
+                        content_text = ""
+                        source_info = ""
+                        page_info = ""
+                        score_info = ""
+                        
+                        # Identify key fields (adapt these based on your actual vector index schema)
                         for key, value in result.items():
-                            st.markdown(f"**{key.replace('_', ' ').title()}:**")
+                            key_lower = key.lower()
                             
-                            # Handle different value types
-                            if isinstance(value, (dict, list)):
-                                st.json(value)
-                            elif isinstance(value, str) and len(value) > 500:
-                                # For long text, show in a text area
-                                st.text_area(f"{key}", value=value, height=200, disabled=True, label_visibility="collapsed")
+                            # Content/text fields
+                            if any(term in key_lower for term in ['content', 'text', 'chunk', 'body', 'markdown', 'analysis_result']):
+                                if isinstance(value, str) and value.strip():
+                                    content_text = value
+                            
+                            # Source document fields
+                            elif any(term in key_lower for term in ['source', 'filename', 'file_name', 'document', 'doc']):
+                                if isinstance(value, str) and value.strip():
+                                    source_info = value
+                            
+                            # Page information
+                            elif any(term in key_lower for term in ['page', 'page_number']):
+                                if value is not None:
+                                    page_info = str(value)
+                            
+                            # Similarity/relevance score
+                            elif any(term in key_lower for term in ['score', 'similarity', 'relevance', 'distance']):
+                                if isinstance(value, (int, float)):
+                                    score_info = f"{value:.3f}"
+                        
+                        # Display source information prominently
+                        if source_info:
+                            source_display = source_info.split('/')[-1] if '/' in source_info else source_info
+                            page_display = f" (Page {page_info})" if page_info else ""
+                            st.markdown(f"**📄 Source:** `{source_display}{page_display}`")
+                        
+                        # Display content preview
+                        if content_text:
+                            # Truncate long content for preview
+                            preview_length = 300
+                            if len(content_text) > preview_length:
+                                preview = content_text[:preview_length] + "..."
+                                st.markdown(f"**Content Preview:**")
+                                st.markdown(f"> {preview}")
+                                
+                                # Add expand button for full content
+                                with st.expander("📖 View Full Content"):
+                                    st.text_area(
+                                        "Full Content",
+                                        value=content_text,
+                                        height=200,
+                                        disabled=True,
+                                        label_visibility="collapsed"
+                                    )
                             else:
-                                st.write(value)
+                                st.markdown(f"**Content:**")
+                                st.markdown(f"> {content_text}")
+                        else:
+                            st.warning("No content text found in this result")
+                    
+                    with col2:
+                        # Display relevance score if available
+                        if score_info:
+                            st.metric("Relevance", score_info)
+                        
+                        # Add actions
+                        if st.button(f"📋 Details", key=f"details_{i}"):
+                            st.session_state[f'show_details_{i}'] = not st.session_state.get(f'show_details_{i}', False)
+                    
+                    # Show detailed view if requested
+                    if st.session_state.get(f'show_details_{i}', False):
+                        with st.expander("🔍 All Fields", expanded=True):
+                            st.markdown("**Complete Result Data:**")
                             
-                            st.markdown("---")
+                            # Organize fields into categories
+                            metadata_fields = {}
+                            content_fields = {}
+                            other_fields = {}
+                            
+                            for key, value in result.items():
+                                key_lower = key.lower()
+                                if any(term in key_lower for term in ['metadata', 'timestamp', 'size', 'id', 'type']):
+                                    metadata_fields[key] = value
+                                elif any(term in key_lower for term in ['content', 'text', 'markdown', 'ocr']):
+                                    content_fields[key] = value
+                                else:
+                                    other_fields[key] = value
+                            
+                            # Display categorized fields
+                            if metadata_fields:
+                                st.markdown("**📋 Metadata:**")
+                                for key, value in metadata_fields.items():
+                                    if isinstance(value, (dict, list)):
+                                        st.json({key: value})
+                                    else:
+                                        st.write(f"• **{key.replace('_', ' ').title()}:** {value}")
+                            
+                            if other_fields:
+                                st.markdown("**🔧 Other Fields:**")
+                                for key, value in other_fields.items():
+                                    if isinstance(value, (dict, list)):
+                                        st.json({key: value})
+                                    else:
+                                        st.write(f"• **{key.replace('_', ' ').title()}:** {value}")
+                            
+                            if content_fields:
+                                st.markdown("**📝 Content Fields:**")
+                                for key, value in content_fields.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        with st.expander(f"📄 {key.replace('_', ' ').title()}"):
+                                            st.text_area(
+                                                key,
+                                                value=value,
+                                                height=150,
+                                                disabled=True,
+                                                label_visibility="collapsed"
+                                            )
+                                    else:
+                                        st.write(f"• **{key.replace('_', ' ').title()}:** {value}")
                 
-                # Simple statistics
+                # Add separator between results
                 st.markdown("---")
+            
+            # Enhanced statistics and summary
+            st.markdown("### 📊 Search Summary")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
                 st.metric("Total Results", len(results))
+            
+            with col2:
+                # Count unique sources
+                sources = set()
+                for result in results:
+                    for key, value in result.items():
+                        if any(term in key.lower() for term in ['source', 'filename', 'file_name']):
+                            if isinstance(value, str) and value.strip():
+                                sources.add(value.split('/')[-1] if '/' in value else value)
+                st.metric("Unique Sources", len(sources))
+            
+            with col3:
+                # Show query length
+                st.metric("Query Terms", len(query_text.split()))
+            
+            with col4:
+                # Average relevance score if available
+                scores = []
+                for result in results:
+                    for key, value in result.items():
+                        if any(term in key.lower() for term in ['score', 'similarity', 'relevance']):
+                            if isinstance(value, (int, float)):
+                                scores.append(value)
+                                break
                 
-            else:
-                st.warning("No results found for your query. Try different keywords or check your vector search configuration.")
-                # Check if it's a package issue
-                try:
-                    from databricks.vector_search.client import VectorSearchClient
-                except ImportError:
-                    st.error("❌ `databricks-vectorsearch` package not installed. Install it with: `pip install databricks-vectorsearch`")
+                if scores:
+                    avg_score = sum(scores) / len(scores)
+                    st.metric("Avg Relevance", f"{avg_score:.3f}")
+                else:
+                    st.metric("Avg Relevance", "N/A")
+            
+            # Quick actions
+            st.markdown("### 🎯 Quick Actions")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("📋 Export Results"):
+                    # Create a simplified export
+                    export_data = []
+                    for i, result in enumerate(results, 1):
+                        simplified_result = {"rank": i}
+                        for key, value in result.items():
+                            if isinstance(value, str) and len(value) < 1000:
+                                simplified_result[key] = value
+                            elif not isinstance(value, (dict, list)):
+                                simplified_result[key] = str(value)
+                        export_data.append(simplified_result)
+                    
+                    # Convert to DataFrame and show download
+                    import pandas as pd
+                    df = pd.DataFrame(export_data)
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download CSV",
+                        data=csv,
+                        file_name=f"vector_search_results_{query_text[:20].replace(' ', '_')}.csv",
+                        mime="text/csv"
+                    )
+            
+            with col2:
+                if st.button("🔄 Refine Search"):
+                    st.session_state['suggest_refinements'] = True
+            
+            with col3:
+                if st.button("💾 Save Query"):
+                    if 'saved_queries' not in st.session_state:
+                        st.session_state['saved_queries'] = []
+                    if query_text not in st.session_state['saved_queries']:
+                        st.session_state['saved_queries'].append(query_text)
+                        st.success("Query saved!")
+            
+            # Search refinement suggestions
+            if st.session_state.get('suggest_refinements', False):
+                st.markdown("### 💡 Search Refinement Suggestions")
+                
+                # Analyze results to suggest refinements
+                all_text = ""
+                for result in results:
+                    for key, value in result.items():
+                        if any(term in key.lower() for term in ['content', 'text']) and isinstance(value, str):
+                            all_text += value + " "
+                
+                # Simple keyword extraction (you could enhance this with NLP)
+                words = all_text.lower().split()
+                word_freq = {}
+                for word in words:
+                    if len(word) > 4 and word.isalpha():
+                        word_freq[word] = word_freq.get(word, 0) + 1
+                
+                # Get top keywords not in original query
+                original_words = set(query_text.lower().split())
+                suggested_terms = []
+                for word, freq in sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:10]:
+                    if word not in original_words and freq > 1:
+                        suggested_terms.append(word)
+                
+                if suggested_terms:
+                    st.markdown("**Consider adding these terms to refine your search:**")
+                    for term in suggested_terms[:5]:
+                        if st.button(f"➕ Add '{term}'", key=f"add_{term}"):
+                            st.session_state['refined_query'] = f"{query_text} {term}"
+                            st.rerun()
+                
+                # Reset the suggestion state
+                st.session_state['suggest_refinements'] = False
+        
         else:
-            st.info("Please enter a search query to get started.")
+            st.warning("No results found for your query. Try different keywords or check your vector search configuration.")
+            
+            # Helpful suggestions when no results found
+            st.markdown("### 💡 Suggestions:")
+            st.markdown("""
+            - Try broader search terms
+            - Check spelling and try synonyms  
+            - Use shorter, more focused queries
+            - Try searching for specific document types or topics
+            """)
+            
+            # Check if it's a package issue
+            try:
+                from databricks.vector_search.client import VectorSearchClient
+            except ImportError:
+                st.error("❌ `databricks-vectorsearch` package not installed. Install it with: `pip install databricks-vectorsearch`")
+    else:
+        st.info("Please enter a search query to get started.")
     
     # Help section
     with st.expander("💡 Search Tips", expanded=False):

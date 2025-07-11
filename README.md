@@ -25,16 +25,22 @@ The parsing step is an important part of the process and improving this can be a
 We have previously used just a standard PDF Parse lib.
 
 the state of the art is with VLMs that requires standing up a VLM.
+For Prompt develop and testing, the quickest way is to stand up a vllm OpenAI API format server.
 
+You can do that with:
 `interactive_examples/Deploy LLM Server`
+run that one a single node cluster with GPU compute
 
-Next is to split the pdfs into separate pages in an image format for the VLM to parse
-
+VLMs don't operate on a PDF file we need to split the pdfs into separate pages in an image format for the VLM to parse
 `interactive_examples/Split Documents`
 
-Then we can use our deployed LLM Server in order to process all the documents
-
+Then you can use the following notebook in a separate window to send queries to the vllm server
 `interactive_examples/Parsing w OpenAI API`
 
+To scale up the workload, ray is the easiest option. Ray is able to optimise batching and IO for best performance. It can also scale up easily on a distributed GPU Cluster on Databricks.
+See: `interactive_examples/Parsing w ray`
 
+#### Dev Notes
 
+When using `Parsing w OpenAI API` together with `Deploy LLM Server` on signle node
+- Mem leak on LLM Deploy with large (10k+ pages) imagesets
