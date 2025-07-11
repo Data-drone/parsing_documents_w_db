@@ -2,22 +2,19 @@
 # MAGIC %md
 # MAGIC #Tool-calling Agent
 # MAGIC
-# MAGIC This is an auto-generated notebook created by an AI Playground export.
-# MAGIC
 # MAGIC This notebook uses [Mosaic AI Agent Framework](https://learn.microsoft.com/azure/databricks/generative-ai/agent-framework/build-genai-apps) to recreate your agent from the AI Playground. It  demonstrates how to develop, manually test, evaluate, log, and deploy a tool-calling agent in LangGraph.
 # MAGIC
 # MAGIC The agent code implements [MLflow's ChatAgent](https://mlflow.org/docs/latest/python_api/mlflow.pyfunc.html#mlflow.pyfunc.ChatAgent) interface, a Databricks-recommended open-source standard that simplifies authoring multi-turn conversational agents, and is fully compatible with Mosaic AI agent framework functionality.
-# MAGIC
-# MAGIC  **_NOTE:_**  This notebook uses LangChain, but AI Agent Framework is compatible with any agent authoring framework, including LlamaIndex or pure Python agents written with the OpenAI SDK.
-# MAGIC
-# MAGIC ## Prerequisites
-# MAGIC
-# MAGIC - Address all `TODO`s in this notebook.
-
+\
 # COMMAND ----------
 
 # MAGIC %pip install -U -qqqq mlflow-skinny[databricks] langgraph==0.3.4 databricks-langchain databricks-agents uv
 # MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Configuring Index and Endpoint Settings
 
 # COMMAND ----------
 
@@ -34,6 +31,15 @@ EMBEDDING_ENDPOINT_NAME = "databricks-gte-large-en"
 SIMPLE_INDEX_NAME = f"{CATALOG}.{SCHEMA}.document_analysis_simple_index"
 OCR_INDEX_NAME = f"{CATALOG}.{SCHEMA}.document_page_ocr_index"
 
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Logging and Model Registration 
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Setup Input Example and Resources for on-behalf-of 
 
 # COMMAND ----------
 
@@ -53,7 +59,15 @@ resources = [DatabricksServingEndpoint(endpoint_name=LLM_ENDPOINT_NAME),
 
 # COMMAND ----------
 
-with mlflow.start_run():
+# MAGIC %md
+# MAGIC ## Log Model As Code 
+
+# COMMAND ----------
+
+with mlflow.start_run() as run:
+    
+    logging_run_id = run.info.run_id    
+    
     logged_agent_info = mlflow.pyfunc.log_model(
         name="compound_agent",
         python_model="Building A Compound Chain",
@@ -66,7 +80,11 @@ with mlflow.start_run():
             f"langgraph=={get_distribution('langgraph').version}",
         ],
     )
-    
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Verify Logged Model    
     
 # COMMAND ----------
     
@@ -86,7 +104,7 @@ chain.predict(chain_input)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # Run Evaluations
+# MAGIC # Assess and Evaluate Our Model
 
 # COMMAND ----------
 
@@ -127,7 +145,8 @@ def predict_with_agent(messages):
 eval_results = mlflow.genai.evaluate(
     data=eval_dataset,
     predict_fn=predict_with_agent,
-    scorers=[RelevanceToQuery(), Safety(), RetrievalRelevance(), RetrievalGroundedness()]
+    scorers=[RelevanceToQuery(), Safety(), RetrievalRelevance(), RetrievalGroundedness()],
+    model_id=logged_agent_info.model_id
 )
 
 print("✅ Evaluation completed!")
@@ -156,4 +175,4 @@ uc_registered_model_info = mlflow.register_model(
 
 from databricks import agents
 
-agents.deploy(UC_MODEL_NAME, uc_registered_model_info.version, tags = {"endpointSource": "playground"})
+agents.deploy(UC_MODEL_NAME, uc_registered_model_info.version)
