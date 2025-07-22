@@ -64,6 +64,16 @@ print(f"✅ Volume '{CATALOG_NAME}.{SCHEMA_NAME}.{VOLUME_NAME}' ready")
 volume_path = f"/Volumes/{CATALOG_NAME}/{SCHEMA_NAME}/{VOLUME_NAME}"
 print(f"\n📁 Volume path: {volume_path}")
 
+# NEW: Copy sample PDFs from repository docs folder into the volume
+try:
+    # Workspace path to docs folder (assumes repo cloned into Workspace files)
+    repo_docs_path = f"/Workspace/Users/{current_user}/powering_knowledge_driven_applications/files/docs"
+    print(f"\nCopying PDFs from {repo_docs_path} to {volume_path} ...")
+    dbutils.fs.cp(repo_docs_path, f"{volume_path}", recurse=True)
+    print("✅ Copied sample PDFs to volume")
+except Exception as e:
+    print(f"⚠️  Could not copy PDFs: {str(e)}")
+
 # COMMAND ----------
 
 # MAGIC %md
