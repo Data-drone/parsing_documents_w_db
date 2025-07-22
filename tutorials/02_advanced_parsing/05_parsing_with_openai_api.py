@@ -294,7 +294,7 @@ def make_adaptive_api_request(
         # Handle rate limiting
         if response.status_code == 429:
             rate_limiter.record_response(response_time, False, is_429=True)
-            logger.warning(f"Rate limited for {image_path}, waiting...")
+            # logger.warning(f"Rate limited for {image_path}, waiting...")
             time.sleep(5)  # Wait before retry
             return None
         
@@ -312,12 +312,12 @@ def make_adaptive_api_request(
     except requests.exceptions.RequestException as e:
         response_time = time.time() - start_time
         rate_limiter.record_response(response_time, False)
-        logger.error(f"Request failed for {image_path}: {str(e)}")
+        # logger.error(f"Request failed for {image_path}: {str(e)}")
         return None
     except Exception as e:
         response_time = time.time() - start_time
         rate_limiter.record_response(response_time, False)
-        logger.error(f"Error processing {image_path}: {str(e)}")
+        # logger.error(f"Error processing {image_path}: {str(e)}")
         return None
 
 # COMMAND ----------
@@ -333,7 +333,7 @@ def adaptive_ocr_udf(page_images: pd.Series, metadata_series: pd.Series) -> pd.S
     """
     
     batch_size = len(page_images)
-    logger.info(f"Processing adaptive OCR batch of {batch_size} images")
+    # logger.info(f"Processing adaptive OCR batch of {batch_size} images")
     
     config = AdaptiveConcurrencyConfig()
     rate_limiter = AdaptiveRateLimiter(config)
@@ -358,7 +358,7 @@ def adaptive_ocr_udf(page_images: pd.Series, metadata_series: pd.Series) -> pd.S
                 inputs.append({'image': None, 'image_path': image_path, 'index': i})
                 
         except Exception as e:
-            logger.error(f"Error preparing input {i}: {e}")
+            # logger.error(f"Error preparing input {i}: {e}")
             inputs.append({'image': None, 'image_path': f'failed_{i}', 'index': i})
     
     valid_inputs = [inp for inp in inputs if inp['image'] is not None]
@@ -372,7 +372,7 @@ def adaptive_ocr_udf(page_images: pd.Series, metadata_series: pd.Series) -> pd.S
     try:
         # Start with initial concurrency
         current_workers = config.initial_workers
-        logger.info(f"Starting with {current_workers} workers for {len(valid_inputs)} images")
+        # logger.info(f"Starting with {current_workers} workers for {len(valid_inputs)} images")
         
         # Process with adaptive concurrency
         with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
@@ -412,10 +412,11 @@ def adaptive_ocr_udf(page_images: pd.Series, metadata_series: pd.Series) -> pd.S
                         completed += 1
                         
                         if completed % 5 == 0:
-                            logger.info(f"Completed {completed}/{len(valid_inputs)}")
+                            # logger.info(f"Completed {completed}/{len(valid_inputs)}")
+                            pass
                             
                     except Exception as e:
-                        logger.error(f"Error getting result for {inp['image_path']}: {e}")
+                        # logger.error(f"Error getting result for {inp['image_path']}: {e}")
                         results[inp['index']] = None
                 
                 # Adjust concurrency and submit more if needed
@@ -447,16 +448,16 @@ def adaptive_ocr_udf(page_images: pd.Series, metadata_series: pd.Series) -> pd.S
                     result = future.result()
                     results[inp['index']] = result
                 except Exception as e:
-                    logger.error(f"Final error for {inp['image_path']}: {e}")
+                    # logger.error(f"Final error for {inp['image_path']}: {e}")
                     results[inp['index']] = None
         
         successful = sum(1 for r in results if r is not None)
-        logger.info(f"Adaptive batch completed: {successful}/{batch_size} successful")
+        # logger.info(f"Adaptive batch completed: {successful}/{batch_size} successful")
         
         return pd.Series(results)
         
     except Exception as e:
-        logger.error(f"Error in adaptive OCR processing: {e}")
+        # logger.error(f"Error in adaptive OCR processing: {e}")
         return pd.Series([None] * batch_size)
     finally:
         session.close()

@@ -25,4 +25,13 @@ MODEL_NAME = 'nanonets/Nanonets-OCR-s'
 
 # COMMAND ----------
 
-!vllm serve nanonets/Nanonets-OCR-s 
+!vllm serve nanonets/Nanonets-OCR-s \
+  --max-num-batched-tokens 16384 \
+  --max-num-seqs 16 \
+  --max-model-len 8192 \
+  --limit-mm-per-prompt "image=1" \
+  --gpu-memory-utilization 0.85 \
+  --enable-chunked-prefill \
+  --kv-cache-dtype auto \
+  --swap-space 8 \
+  --served-model-name "nanonets/Nanonets-OCR-s"
