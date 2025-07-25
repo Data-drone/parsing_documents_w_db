@@ -26,11 +26,17 @@
 # Get current user for catalog naming
 current_user = spark.sql("SELECT current_user()").first()[0]
 username = current_user.split('@')[0].replace('.', '_')
+import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # Default configurations - you can modify these
-CATALOG_NAME = f"{username}_document_parsing"
-SCHEMA_NAME = "tutorials"
-VOLUME_NAME = "sample_docs"
+CATALOG_NAME = os.getenv("CATALOG_NAME", f"{username}_document_parsing")
+SCHEMA_NAME  = os.getenv("SCHEMA_NAME", "tutorials")
+VOLUME_NAME  = os.getenv("VOLUME_NAME", "sample_docs")
 
 print(f"🎯 Environment Configuration:")
 print(f"   Catalog: {CATALOG_NAME}")
@@ -64,15 +70,23 @@ print(f"✅ Volume '{CATALOG_NAME}.{SCHEMA_NAME}.{VOLUME_NAME}' ready")
 volume_path = f"/Volumes/{CATALOG_NAME}/{SCHEMA_NAME}/{VOLUME_NAME}"
 print(f"\n📁 Volume path: {volume_path}")
 
-# NEW: Copy sample PDFs from repository docs folder into the volume
-try:
-    # Workspace path to docs folder (assumes repo cloned into Workspace files)
-    repo_docs_path = f"/Workspace/Users/{current_user}/powering_knowledge_driven_applications/files/docs"
-    print(f"\nCopying PDFs from {repo_docs_path} to {volume_path} ...")
-    dbutils.fs.cp(repo_docs_path, f"{volume_path}", recurse=True)
-    print("✅ Copied sample PDFs to volume")
-except Exception as e:
-    print(f"⚠️  Could not copy PDFs: {str(e)}")
+# NEW: Copy sample PDFs from repository docs folder into the volume using os & shutil
+import shutil, os
+from pathlib import Path
+
+repo_docs_path = Path(f"/Workspace/Users/{current_user}/powering_knowledge_driven_applications/files/docs")
+dst_path       = Path(volume_path)          # '/Volumes/…/sample_docs'
+
+# Ensure destination exists
+dst_path.mkdir(parents=True, exist_ok=True)
+
+# Copy PDFs
+copied = sum(
+    1 for src in repo_docs_path.rglob("*.pdf")
+    if not shutil.copy2(src, dst_path / src.name)
+)
+
+print(f"✅ Copied {copied} PDF(s) to volume" if copied else "⚠️  No PDFs found to copy")
 
 # COMMAND ----------
 
@@ -86,7 +100,7 @@ import os
 
 # Sample PDF URLs (you can replace with your own)
 sample_pdfs = {
-    "databricks_ml_guide.pdf": "https://docs.databricks.com/_extras/documents/databricks-ml-guide.pdf",
+    "delta_lake_guide.pdf": "https://delta.io/pdfs/dldg_databricks.pdf",
     # Add more sample PDFs as needed
 }
 

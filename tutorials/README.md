@@ -9,13 +9,12 @@ Welcome to the Databricks Document Parsing Tutorial! This tutorial series will g
 
 - ✅ `00_setup/01_environment_setup.py` - Set up Unity Catalog, create volumes
 - ✅ `00_setup/02_verify_permissions.py` - Verify access to required resources
-- ✅ `00_setup/03_exploring_llm_parsing.py` - Explore LLM capabilities for parsing
-- ✅ `00_setup/04_diagnose_dataset.py` - Analyze your dataset requirements
+- ✅ `00_setup/03_create_document_store.py` - Load PDFs into Delta tables
 
 ### 📚 Module 1: Foundations (2 hours)
 **Goal**: Learn the core concepts of document processing
 
-- 📄 `01_foundations/01_create_document_store.py` - Load PDFs into Delta tables
+- 📄 `01_foundations/01_exploring_llm_parsing.py` - Explore LLM capabilities for parsing
 - 📄 `01_foundations/02_basic_pdf_parsing.py` - Extract text using PyMuPDF
 - 📄 `01_foundations/03_create_summaries.py` - Generate document summaries with LLMs
 

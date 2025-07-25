@@ -16,10 +16,17 @@
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Load Configuration
+# Load environment variables (optional .env)
+import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-# COMMAND ----------
+CATALOG_ENV = os.getenv("CATALOG_NAME")
+SCHEMA_ENV  = os.getenv("SCHEMA_NAME")
+VOLUME_ENV  = os.getenv("VOLUME_NAME")
 
 # Try to load saved configuration
 try:
@@ -31,10 +38,10 @@ try:
     config_table = f"{username}_document_parsing.tutorials.tutorial_config"
     config = spark.table(config_table).first()
     
-    CATALOG_NAME = config['catalog_name']
-    SCHEMA_NAME = config['schema_name']
-    VOLUME_NAME = config['volume_name']
-    volume_path = config['volume_path']
+    CATALOG_NAME = CATALOG_ENV or config['catalog_name']
+    SCHEMA_NAME  = SCHEMA_ENV or config['schema_name']
+    VOLUME_NAME  = VOLUME_ENV or config['volume_name']
+    volume_path = f"/Volumes/{CATALOG_NAME}/{SCHEMA_NAME}/{VOLUME_NAME}"
     
     print("✅ Loaded configuration from previous setup")
     print(f"   Catalog: {CATALOG_NAME}")
@@ -46,9 +53,9 @@ except Exception as e:
     print("   Please run 01_environment_setup.py first!")
     
     # Fallback configuration
-    CATALOG_NAME = f"{username}_document_parsing"
-    SCHEMA_NAME = "tutorials"
-    VOLUME_NAME = "sample_docs"
+    CATALOG_NAME = CATALOG_ENV or f"{username}_document_parsing"
+    SCHEMA_NAME  = SCHEMA_ENV or "tutorials"
+    VOLUME_NAME  = VOLUME_ENV or "sample_docs"
     volume_path = f"/Volumes/{CATALOG_NAME}/{SCHEMA_NAME}/{VOLUME_NAME}"
 
 # COMMAND ----------

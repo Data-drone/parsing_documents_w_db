@@ -31,9 +31,22 @@ from datetime import datetime
 from pyspark.sql.types import StructType, StructField, StringType, LongType, TimestampType, BinaryType
 
 # Configuration: Define where our documents live and where to store results
-CATALOG = "brian_gen_ai"        # Your Unity Catalog catalog name
-SCHEMA = "parsing_test"         # Schema (database) within the catalog
-VOLUME = "raw_data"             # Volume where your documents are stored
+# Try to load environment variables from an optional .env file (python-dotenv)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # python-dotenv not installed; continue with defaults
+    pass
+
+# Derive sensible defaults if env vars are absent
+current_user = spark.sql("SELECT current_user()").first()[0]
+username = current_user.split('@')[0].replace('.', '_')
+
+CATALOG = os.getenv("CATALOG_NAME", f"{username}_document_parsing")   # Unity Catalog catalog
+SCHEMA  = os.getenv("SCHEMA_NAME", "tutorials")                       # Schema within the catalog
+VOLUME  = os.getenv("VOLUME_NAME", "sample_docs")                     # Volume holding raw docs
+
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
 OUTPUT_TABLE = f"{CATALOG}.{SCHEMA}.document_store"
 
@@ -58,7 +71,7 @@ print("Note: This script will scan all subdirectories for PDF, DOC, and DOCX fil
 # ====================================================
 # This section recursively scans the volume for documents and reads their content
 
-def list_files_with_metadata_and_content(volume_path, exts=(".pdf", ".doc", ".docx")):
+def list_files_with_metadata_and_content(volume_path, exts=(".pdf")):
     """
     Recursively scan a volume for documents and extract both metadata and binary content.
     

@@ -25,19 +25,12 @@ This module helps you prepare your Databricks environment for document parsing.
 - Verifies compute permissions
 - Checks model serving endpoints
 
-### 03_exploring_llm_parsing.py
-**Time**: 10 minutes  
-**Purpose**: Explore LLM capabilities for document parsing
-- Test different LLM endpoints
-- Understand parsing capabilities
-- Compare parsing approaches
-
-### 04_diagnose_dataset.py
-**Time**: 5 minutes  
-**Purpose**: Analyze your document dataset
-- Check document types and sizes
-- Estimate processing requirements
-- Plan resource allocation
+### 03_create_document_store.py
+**Time**: 15 minutes  
+**Purpose**: Load PDFs into a Delta document store for downstream parsing
+- Scans a Unity Catalog volume for supported documents
+- Stores binary content and metadata in Delta Lake
+- Provides verification queries to validate the loaded data
 
 ## Next Steps
 
