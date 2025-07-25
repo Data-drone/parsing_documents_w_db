@@ -30,29 +30,48 @@ import os
 from datetime import datetime
 from pyspark.sql.types import StructType, StructField, StringType, LongType, TimestampType, BinaryType
 
-# Configuration: Define where our documents live and where to store results
-# Try to load environment variables from an optional .env file (python-dotenv)
+# --------------------------------------------
+# Widget-driven configuration (similar to 01_environment_setup)
+# --------------------------------------------
+
+# Load environment variables from optional .env file
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    # python-dotenv not installed; continue with defaults
     pass
 
-# Derive sensible defaults if env vars are absent
+# Determine current user to build sensible defaults
 current_user = spark.sql("SELECT current_user()").first()[0]
 username = current_user.split('@')[0].replace('.', '_')
 
-CATALOG = os.getenv("CATALOG_NAME", f"{username}_document_parsing")   # Unity Catalog catalog
-SCHEMA  = os.getenv("SCHEMA_NAME", "tutorials")                       # Schema within the catalog
-VOLUME  = os.getenv("VOLUME_NAME", "sample_docs")                     # Volume holding raw docs
+# Default values from env vars (or fallbacks)
+_CATALOG_DEF = os.getenv("CATALOG_NAME", f"{username}_document_parsing")
+_SCHEMA_DEF  = os.getenv("SCHEMA_NAME", "tutorials")
+_VOLUME_DEF  = os.getenv("VOLUME_NAME", "sample_docs")
 
+# Widgets allow users to override
+dbutils.widgets.text("CATALOG_NAME", _CATALOG_DEF, "Catalog")
+dbutils.widgets.text("SCHEMA_NAME",  _SCHEMA_DEF,  "Schema")
+dbutils.widgets.text("VOLUME_NAME",  _VOLUME_DEF,  "Volume")
+
+# Fetch the (possibly overridden) values
+CATALOG = dbutils.widgets.get("CATALOG_NAME")
+SCHEMA  = dbutils.widgets.get("SCHEMA_NAME")
+VOLUME  = dbutils.widgets.get("VOLUME_NAME")
+
+# Paths / table names derived from final values
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
 OUTPUT_TABLE = f"{CATALOG}.{SCHEMA}.document_store"
 
-print(f"Using volume: {VOLUME_PATH}")
-print(f"Output table: {OUTPUT_TABLE}")
-print("Note: This script will scan all subdirectories for PDF, DOC, and DOCX files")
+print("🎯 Configuration:")
+print(f"   Catalog: {CATALOG}")
+print(f"   Schema:  {SCHEMA}")
+print(f"   Volume:  {VOLUME}")
+print(f"   Volume path: {VOLUME_PATH}")
+print(f"   Output table: {OUTPUT_TABLE}")
+
+print("Note: This script will scan all subdirectories for PDF files")
 
 # COMMAND ----------
 # MAGIC %md

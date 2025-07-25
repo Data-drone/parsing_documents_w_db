@@ -18,14 +18,7 @@ This module helps you prepare your Databricks environment for document parsing.
 - Sets up volumes for document storage
 - Verifies Databricks configuration
 
-### 02_verify_permissions.py
-**Time**: 5 minutes  
-**Purpose**: Check all required permissions and access
-- Tests Unity Catalog access
-- Verifies compute permissions
-- Checks model serving endpoints
-
-### 03_create_document_store.py
+### 02_create_document_store.py
 **Time**: 15 minutes  
 **Purpose**: Load PDFs into a Delta document store for downstream parsing
 - Scans a Unity Catalog volume for supported documents

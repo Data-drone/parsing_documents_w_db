@@ -19,13 +19,14 @@
 # MAGIC %md
 # MAGIC ## Configuration
 # MAGIC 
-# MAGIC Update these values to match your preferences:
+# MAGIC Use the widgets at the top of the notebook (right sidebar) to set or override the values below. Defaults come from your environment variables or sensible fall-backs, so you can usually just run the notebook as-is.
 
 # COMMAND ----------
 
 # Get current user for catalog naming
 current_user = spark.sql("SELECT current_user()").first()[0]
 username = current_user.split('@')[0].replace('.', '_')
+
 import os
 try:
     from dotenv import load_dotenv
@@ -37,17 +38,40 @@ except ImportError:
 CATALOG_NAME = os.getenv("CATALOG_NAME", f"{username}_document_parsing")
 SCHEMA_NAME  = os.getenv("SCHEMA_NAME", "tutorials")
 VOLUME_NAME  = os.getenv("VOLUME_NAME", "sample_docs")
+LLM_MODEL    = os.getenv("LLM_MODEL", "databricks-meta-llama-3-3-70b-instruct")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "databricks-gte-large-en")
+VECTOR_SEARCH_ENDPOINT = os.getenv("VECTOR_SEARCH_ENDPOINT", "one-env-shared-endpoint-2")
 
-print(f"🎯 Environment Configuration:")
-print(f"   Catalog: {CATALOG_NAME}")
-print(f"   Schema: {SCHEMA_NAME}")
-print(f"   Volume: {VOLUME_NAME}")
-print(f"   User: {current_user}")
+# Create widgets with current defaults (user can override in the UI)
+dbutils.widgets.text("CATALOG_NAME", CATALOG_NAME, "Catalog")
+dbutils.widgets.text("SCHEMA_NAME",  SCHEMA_NAME,  "Schema")
+dbutils.widgets.text("VOLUME_NAME",  VOLUME_NAME,  "Volume")
+
+dbutils.widgets.text("LLM_MODEL", LLM_MODEL, "LLM Model")
+dbutils.widgets.text("EMBEDDING_MODEL", EMBEDDING_MODEL, "Embedding Model")
+dbutils.widgets.text("VECTOR_SEARCH_ENDPOINT", VECTOR_SEARCH_ENDPOINT, "Vector Search Endpoint")
+
+# Read the (possibly overridden) widget values
+CATALOG_NAME            = dbutils.widgets.get("CATALOG_NAME")
+SCHEMA_NAME             = dbutils.widgets.get("SCHEMA_NAME")
+VOLUME_NAME             = dbutils.widgets.get("VOLUME_NAME")
+LLM_MODEL               = dbutils.widgets.get("LLM_MODEL")
+EMBEDDING_MODEL         = dbutils.widgets.get("EMBEDDING_MODEL")
+VECTOR_SEARCH_ENDPOINT  = dbutils.widgets.get("VECTOR_SEARCH_ENDPOINT")
+
+print("🎯 Environment Configuration:")
+print(f"   Catalog:           {CATALOG_NAME}")
+print(f"   Schema:            {SCHEMA_NAME}")
+print(f"   Volume:            {VOLUME_NAME}")
+print(f"   LLM Model:         {LLM_MODEL}")
+print(f"   Embedding Model:   {EMBEDDING_MODEL}")
+print(f"   Vector Search EP:  {VECTOR_SEARCH_ENDPOINT or '⟨not set⟩'}")
+print(f"   User:              {current_user}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 1: Create Unity Catalog Objects
+# MAGIC ## Step 1: Create Unity Catalog Objects & Copy Sample PDFs
 
 # COMMAND ----------
 
@@ -70,7 +94,8 @@ print(f"✅ Volume '{CATALOG_NAME}.{SCHEMA_NAME}.{VOLUME_NAME}' ready")
 volume_path = f"/Volumes/{CATALOG_NAME}/{SCHEMA_NAME}/{VOLUME_NAME}"
 print(f"\n📁 Volume path: {volume_path}")
 
-# NEW: Copy sample PDFs from repository docs folder into the volume using os & shutil
+# COMMAND ----------
+
 import shutil, os
 from pathlib import Path
 
@@ -96,7 +121,6 @@ print(f"✅ Copied {copied} PDF(s) to volume" if copied else "⚠️  No PDFs fo
 # COMMAND ----------
 
 import requests
-import os
 
 # Sample PDF URLs (you can replace with your own)
 sample_pdfs = {
@@ -150,56 +174,70 @@ if SCHEMA_NAME in schema_names:
 else:
     print(f"❌ Schema '{SCHEMA_NAME}' not found")
 
-# Check compute access
-print("\n🔍 Checking compute access...")
-print(f"✅ Running on: {spark.conf.get('spark.databricks.clusterUsageTags.clusterName', 'Unknown')}")
-print(f"✅ Spark version: {spark.version}")
-
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 4: Save Configuration for Later Use
+# MAGIC ## Step 4: Verify GenAI Services
+# MAGIC 
+# MAGIC This step checks access to the model-serving endpoints (LLM and embedding) and the Vector Search endpoint defined in your environment variables.
+# MAGIC 
+# MAGIC Environment variables used:
+# MAGIC - `LLM_MODEL`
+# MAGIC - `EMBEDDING_MODEL`
+# MAGIC - `VECTOR_SEARCH_ENDPOINT`
 
 # COMMAND ----------
 
-# Save configuration to a temp view for other notebooks
-config_df = spark.createDataFrame([
-    {
-        "catalog_name": CATALOG_NAME,
-        "schema_name": SCHEMA_NAME,
-        "volume_name": VOLUME_NAME,
-        "volume_path": volume_path,
-        "username": username
-    }
-])
+# Check model-serving and vector-search access
 
-# Create a table to store config
-table_name = f"{CATALOG_NAME}.{SCHEMA_NAME}.tutorial_config"
-config_df.write.mode("overwrite").saveAsTable(table_name)
+print("🔍 Checking model-serving endpoint access…\n")
 
-print(f"💾 Configuration saved to: {table_name}")
-print("\nYou can load this configuration in other notebooks with:")
-print(f"config = spark.table('{table_name}').first()")
+# Use the values obtained from widgets/env vars earlier
+for model_name in [LLM_MODEL, EMBEDDING_MODEL]:
+    try:
+        _ = spark.sql(f"SELECT ai_query('{model_name}', 'ping')").first()
+        print(f"✅ Able to query model endpoint: {model_name}")
+    except Exception as e:
+        print(f"❌ Cannot query model endpoint: {model_name}")
+        print(f"   Error: {e}")
+
+print("\n🔍 Checking vector search endpoint access…\n")
+
+try:
+    from databricks.vector_search.client import VectorSearchClient
+    vsc = VectorSearchClient()
+    endpoints = vsc.list_endpoints()
+    if VECTOR_SEARCH_ENDPOINT:
+        match = any(ep.get('name') == VECTOR_SEARCH_ENDPOINT for ep in endpoints)
+        if match:
+            print(f"✅ Vector search endpoint '{VECTOR_SEARCH_ENDPOINT}' is available")
+        else:
+            avail = ', '.join(ep.get('name') for ep in endpoints) or 'none'
+            print(f"❌ Endpoint '{VECTOR_SEARCH_ENDPOINT}' not found. Available endpoints: {avail}")
+    else:
+        print("⚠️ VECTOR_SEARCH_ENDPOINT not set. Use one of the following endpoints or create a new one:")
+        for ep in endpoints:
+            print(f"   - {ep.get('name')}")
+except ImportError:
+    print("⚠️ databricks-vectorsearch package not installed. Run `%pip install databricks-vectorsearch` in this notebook and retry.")
+except Exception as e:
+    print(f"❌ Vector search access issue: {e}")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## ✅ Setup Complete!
 # MAGIC 
-# MAGIC Your environment is now ready for the document parsing tutorials.
+# MAGIC Your environment is now ready for the document-parsing tutorials.
 # MAGIC 
-# MAGIC ### What we created:
-# MAGIC - **Catalog**: `{CATALOG_NAME}` - Your workspace for all tutorial data
-# MAGIC - **Schema**: `{SCHEMA_NAME}` - Organization for tables
-# MAGIC - **Volume**: `{VOLUME_NAME}` - Storage for PDF documents
-# MAGIC - **Config Table**: `tutorial_config` - Saved configuration
+# MAGIC ### What we created & verified:
+# MAGIC - **Catalog**, **Schema**, and **Volume** for storing tutorial data
+# MAGIC - Verified access to configured model-serving endpoints and Vector Search endpoint
 # MAGIC 
 # MAGIC ### Next Steps:
-# MAGIC 1. Continue to `02_verify_permissions.py` to check all permissions
-# MAGIC 2. Then explore the other setup notebooks
-# MAGIC 3. Move on to Module 1: Foundations when ready
+# MAGIC 1. Explore the other setup notebooks or proceed to Module 1: Foundations
+# MAGIC 2. If any check above failed, resolve it (permissions, packages, endpoint names) and re-run this notebook
 # MAGIC 
 # MAGIC ### Tips:
-# MAGIC - You can add your own PDFs to the volume at: `{volume_path}`
-# MAGIC - All tutorial notebooks will use the configuration saved here
-# MAGIC - If you need to reset, just re-run this notebook 
+# MAGIC - Add your own PDFs to the volume path configured earlier
+# MAGIC - Re-run this notebook anytime to retest your environment 
