@@ -106,12 +106,43 @@ dst_path       = Path(volume_path)          # '/Volumes/…/sample_docs'
 dst_path.mkdir(parents=True, exist_ok=True)
 
 # Copy PDFs
-copied = sum(
+pdf_copied = sum(
     1 for src in repo_docs_path.rglob("*.pdf")
     if not shutil.copy2(src, dst_path / src.name)
 )
 
-print(f"✅ Copied {copied} PDF(s) to volume" if copied else "⚠️  No PDFs found to copy")
+print(f"✅ Copied {pdf_copied} PDF(s) to volume" if pdf_copied else "⚠️  No PDFs found to copy")
+
+# Copy page images directory and its contents
+page_images_src = repo_docs_path / "page_images"
+page_images_dst = dst_path / "page_images"
+
+if page_images_src.exists():
+    print(f"📷 Copying page images from {page_images_src}...")
+    
+    # Create page_images directory in destination
+    page_images_dst.mkdir(exist_ok=True)
+    
+    # Copy all image files
+    image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff']
+    images_copied = 0
+    
+    for img_file in page_images_src.iterdir():
+        if img_file.is_file() and img_file.suffix.lower() in image_extensions:
+            shutil.copy2(img_file, page_images_dst / img_file.name)
+            img_size = img_file.stat().st_size / (1024 * 1024)  # Size in MB
+            print(f"   ✅ {img_file.name} ({img_size:.2f} MB)")
+            images_copied += 1
+    
+    print(f"✅ Copied {images_copied} image(s) to volume/page_images/")
+else:
+    print("⚠️  No page_images directory found in docs folder")
+
+# Verify the copy operation
+print(f"\n📋 Copy Summary:")
+print(f"   PDFs copied: {pdf_copied}")
+print(f"   Images copied: {images_copied if 'images_copied' in locals() else 0}")
+print(f"   Destination: {volume_path}")
 
 # COMMAND ----------
 
