@@ -1,10 +1,60 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # PDF Page Splitting Pipeline
+# MAGIC # PDF to Image Conversion for Vision Language Model (VLM) Processing
+# MAGIC 
+# MAGIC ## Overview
+# MAGIC 
+# MAGIC This notebook converts PDF documents into individual page images to enable processing with Vision Language Models (VLMs). Unlike traditional text extraction methods, VLMs require visual input to understand document structure, layouts, charts, diagrams, and complex formatting that would be lost in text-only extraction.
+# MAGIC 
+# MAGIC ## Why Convert PDFs to Images for VLM Processing?
+# MAGIC 
+# MAGIC ### The VLM Advantage
+# MAGIC - **Visual Understanding**: VLMs can interpret charts, graphs, tables, and complex layouts
+# MAGIC - **Spatial Awareness**: Understand relationships between visual elements 
+# MAGIC - **Format Preservation**: Maintain document structure and formatting context
+# MAGIC - **Multimodal Processing**: Combine visual and textual understanding
+# MAGIC 
+# MAGIC ### Use Cases
+# MAGIC - **Financial Reports**: Extract data from complex tables and charts
+# MAGIC - **Research Papers**: Understand figures, equations, and formatting
+# MAGIC - **Forms and Documents**: Process structured layouts and handwritten content
+# MAGIC - **Presentations**: Analyze slide layouts and visual content
+# MAGIC 
+# MAGIC ## Distributed Processing Benefits
+# MAGIC 
+# MAGIC This notebook leverages Apache Spark's distributed computing to:
+# MAGIC - **Scale Processing**: Handle thousands of documents in parallel
+# MAGIC - **Memory Management**: Process large files efficiently across cluster nodes
+# MAGIC - **Fault Tolerance**: Recover from failures during processing
+# MAGIC - **Cost Optimization**: Use cluster resources efficiently
+# MAGIC 
+# MAGIC ## Configuration
+# MAGIC 
+# MAGIC This notebook uses **Databricks widgets** for runtime configuration, following the same pattern as our foundation tutorials. The widgets default to environment variables from your `.env` file but can be overridden at runtime.
+# MAGIC 
+# MAGIC ### Widget Configuration Options:
+# MAGIC - **Catalog Name**: Unity Catalog where tables are stored
+# MAGIC - **Schema Name**: Schema within the catalog for document processing
+# MAGIC - **Source Table Name**: Name of the table containing PDF documents (typically `document_store_blob`)
+# MAGIC - **Output Table Name**: Name for the output table with page images (typically `document_page_docs`)
+# MAGIC - **High Resolution Images**: Toggle for 2x resolution (larger files, better quality)
+# MAGIC - **Max File Size (MB)**: Maximum PDF size to process (prevents memory issues)
+# MAGIC - **Partition Count**: Number of Spark partitions for distributed processing
+# MAGIC 
+# MAGIC ### Environment File Setup (.env):
+# MAGIC ```
+# MAGIC CATALOG_NAME='your_catalog'
+# MAGIC INPUT_SCHEMA='your_schema'
+# MAGIC SOURCE_TABLE='document_store_blob'
+# MAGIC OUTPUT_TABLE='document_page_docs'
+# MAGIC USE_HIGH_RESOLUTION='false'
+# MAGIC MAX_FILE_SIZE_MB='50'
+# MAGIC REPARTITION_COUNT='8'
+# MAGIC ```
 
 # COMMAND ----------
 
-# MAGIC %pip install pymupdf
+# MAGIC %pip install pymupdf python-dotenv
 # MAGIC %restart_python
 
 # COMMAND ----------
@@ -17,26 +67,114 @@ import time
 from datetime import datetime
 import uuid
 import gc
+from dotenv import load_dotenv, find_dotenv
 
 from pyspark.sql.types import *
 from pyspark.sql import functions as F
 from pyspark.sql.functions import pandas_udf, col
 
-# Configuration
-CATALOG = "brian_gen_ai"
-INPUT_SCHEMA = "parsing_test" 
-SOURCE_TABLE = "document_store_blob"
-OUTPUT_TABLE = "document_page_docs"
-
-USE_HIGH_RESOLUTION = False
-MAX_FILE_SIZE_MB = 50
+# Load environment variables from .env file (if present) **before** we read them via os.getenv
+load_dotenv(find_dotenv())
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-print(f"Source: {CATALOG}.{INPUT_SCHEMA}.{SOURCE_TABLE}")
-print(f"Output: {CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}")
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Runtime Configuration with Widgets
+# MAGIC 
+# MAGIC Following the same pattern as our foundation tutorials, we use Databricks widgets to allow runtime configuration while defaulting to environment variables. This provides flexibility for different users and environments.
+
+# COMMAND ----------
+
+# -----------------------------------------------------------------------------
+# Runtime configuration via widgets
+# -----------------------------------------------------------------------------
+# Pull defaults from environment variables (populated via `.env` or workspace)
+
+# Create Databricks widgets so users can override at run-time
+dbutils.widgets.text("catalog_name", os.getenv("CATALOG_NAME", "brian_gen_ai"), "Catalog Name")
+dbutils.widgets.text("schema_name", os.getenv("INPUT_SCHEMA", "parsing_test"), "Schema Name") 
+dbutils.widgets.text("source_table", os.getenv("SOURCE_TABLE", "document_store_blob"), "Source Table Name")
+dbutils.widgets.text("output_table", os.getenv("OUTPUT_TABLE", "document_page_docs"), "Output Table Name")
+
+# Image processing settings
+dbutils.widgets.dropdown("use_high_resolution", os.getenv("USE_HIGH_RESOLUTION", "false"), ["true", "false"], "High Resolution Images")
+dbutils.widgets.text("max_file_size_mb", os.getenv("MAX_FILE_SIZE_MB", "50"), "Max File Size (MB)")
+dbutils.widgets.text("repartition_count", os.getenv("REPARTITION_COUNT", "8"), "Partition Count")
+
+# Read values back from the widgets
+CATALOG = dbutils.widgets.get("catalog_name")
+INPUT_SCHEMA = dbutils.widgets.get("schema_name")
+SOURCE_TABLE = dbutils.widgets.get("source_table")
+OUTPUT_TABLE = dbutils.widgets.get("output_table")
+
+# Image processing settings
+USE_HIGH_RESOLUTION = dbutils.widgets.get("use_high_resolution").lower() == "true"
+MAX_FILE_SIZE_MB = int(dbutils.widgets.get("max_file_size_mb"))
+REPARTITION_COUNT = int(dbutils.widgets.get("repartition_count"))
+
+# Construct full table names
+SOURCE_TABLE_FULL = f"{CATALOG}.{INPUT_SCHEMA}.{SOURCE_TABLE}"
+OUTPUT_TABLE_FULL = f"{CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}"
+
+print("=== PDF to Image Conversion Configuration ===")
+print(f"Source Table: {SOURCE_TABLE_FULL}")
+print(f"Output Table: {OUTPUT_TABLE_FULL}")
+print(f"High Resolution: {USE_HIGH_RESOLUTION}")
+print(f"Max File Size: {MAX_FILE_SIZE_MB} MB")
+print(f"Partition Count: {REPARTITION_COUNT}")
+print("=" * 50)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 🔍 Configuration Verification
+# MAGIC 
+# MAGIC Let's verify that our configuration is correct and the source table contains processable PDF documents.
+
+# COMMAND ----------
+
+# Verify source table exists and contains PDFs
+try:
+    # Check if source table exists and get basic stats
+    table_info = spark.sql(f"DESCRIBE TABLE EXTENDED {SOURCE_TABLE_FULL}")
+    print("✅ Source table exists")
+    
+    # Get PDF document counts
+    pdf_stats = spark.sql(f"""
+        SELECT 
+            COUNT(*) as total_documents,
+            COUNT(CASE WHEN file_extension = '.pdf' THEN 1 END) as pdf_documents,
+            COUNT(CASE WHEN binary_content IS NOT NULL THEN 1 END) as documents_with_content,
+            COUNT(CASE WHEN file_extension = '.pdf' AND binary_content IS NOT NULL 
+                       AND file_size_bytes <= {MAX_FILE_SIZE_MB * 1024 * 1024} THEN 1 END) as processable_pdfs
+        FROM {SOURCE_TABLE_FULL}
+    """).collect()[0]
+    
+    print(f"📊 Document Statistics:")
+    print(f"   Total documents: {pdf_stats['total_documents']:,}")
+    print(f"   PDF documents: {pdf_stats['pdf_documents']:,}")
+    print(f"   Documents with content: {pdf_stats['documents_with_content']:,}")
+    print(f"   Processable PDFs: {pdf_stats['processable_pdfs']:,}")
+    
+    if pdf_stats['processable_pdfs'] == 0:
+        print("⚠️  No processable PDF documents found. Check your source table and file size limits.")
+    else:
+        print(f"✅ Ready to process {pdf_stats['processable_pdfs']:,} PDF documents")
+        
+except Exception as e:
+    print(f"❌ Error accessing source table: {e}")
+    print("Please check your catalog, schema, and table names in the widgets above.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Core Processing Functions
+# MAGIC 
+# MAGIC The following functions handle document ID generation, metadata creation, and the distributed PDF-to-image conversion process.
 
 # COMMAND ----------
 
@@ -189,8 +327,19 @@ def extract_pdf_pages_batch(iterator):
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Main Processing Pipeline
+# MAGIC 
+# MAGIC Now we'll execute the PDF-to-image conversion using distributed Spark processing. The pipeline:
+# MAGIC 1. Loads and filters PDF documents from the source table
+# MAGIC 2. Processes documents in parallel across the cluster 
+# MAGIC 3. Converts each PDF page to a PNG image
+# MAGIC 4. Saves results to the output table with partitioning
+
+# COMMAND ----------
+
 # Load and filter source data
-source_df = spark.table(f"{CATALOG}.{INPUT_SCHEMA}.{SOURCE_TABLE}")
+source_df = spark.table(SOURCE_TABLE_FULL)
 
 processable_files = source_df.filter(
     (col("file_extension") == ".pdf") &
@@ -212,7 +361,7 @@ pages_df = processable_files.select(
     col("volume_path"),
     col("binary_content"),
     col("file_size_bytes")
-).repartition(8).mapInPandas(
+).repartition(REPARTITION_COUNT).mapInPandas(
     extract_pdf_pages_batch,
     schema=pdf_pages_schema
 )
@@ -223,7 +372,7 @@ pages_df = processable_files.select(
  .mode("overwrite")
  .option("overwriteSchema", "true")
  .partitionBy("doc_id")
- .saveAsTable(f"{CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}")
+ .saveAsTable(OUTPUT_TABLE_FULL)
 )
 
 end_time = time.time()
@@ -232,12 +381,19 @@ print(f"Processing completed in {processing_time:.1f} seconds")
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Processing Results and Quality Validation
+# MAGIC 
+# MAGIC Let's examine the results of our PDF-to-image conversion and validate the output quality.
+
+# COMMAND ----------
+
 # Verification queries
 print("=== RESULTS ===")
 
 # Get counts
-final_pages_count = spark.table(f"{CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}").count()
-final_docs_count = spark.table(f"{CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}").select("doc_id").distinct().count()
+final_pages_count = spark.table(OUTPUT_TABLE_FULL).count()
+final_docs_count = spark.table(OUTPUT_TABLE_FULL).select("doc_id").distinct().count()
 
 print(f"Documents processed: {final_docs_count:,}")
 print(f"Total pages extracted: {final_pages_count:,}")
@@ -253,7 +409,7 @@ SELECT
     total_pages,
     file_size_bytes,
     LENGTH(page_image_png) as image_size_bytes
-FROM {CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}
+FROM {OUTPUT_TABLE_FULL}
 ORDER BY source_filename, page_number
 LIMIT 10
 """)
@@ -271,7 +427,58 @@ SELECT
     MIN(page_number) as min_page_num,
     MAX(page_number) as max_page_num,
     AVG(LENGTH(page_image_png)) as avg_image_size_bytes
-FROM {CATALOG}.{INPUT_SCHEMA}.{OUTPUT_TABLE}
+FROM {OUTPUT_TABLE_FULL}
 """)
 
 display(validation_df)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Processing Results and Next Steps
+# MAGIC 
+# MAGIC ### What We've Accomplished
+# MAGIC 
+# MAGIC This notebook has successfully:
+# MAGIC 1. **Converted PDF documents to PNG images**: Each page is now a high-quality image ready for VLM processing
+# MAGIC 2. **Preserved document metadata**: File information, processing timestamps, and document structure are maintained
+# MAGIC 3. **Distributed processing**: Used Spark's parallel processing capabilities for efficient bulk conversion
+# MAGIC 4. **Quality validation**: Verified the conversion results and data integrity
+# MAGIC 
+# MAGIC ### Output Data Structure
+# MAGIC 
+# MAGIC The resulting table contains:
+# MAGIC - `doc_id`: Unique identifier for each document
+# MAGIC - `source_filename`: Original PDF filename
+# MAGIC - `page_number`: Page number within the document (1-indexed)
+# MAGIC - `page_image_png`: Binary PNG image data for VLM processing
+# MAGIC - `total_pages`: Total pages in the source document
+# MAGIC - `file_size_bytes`: Original PDF file size
+# MAGIC - `processing_timestamp`: When the conversion was performed
+# MAGIC - `metadata_json`: Additional document metadata
+# MAGIC 
+# MAGIC ### Next Steps for VLM Processing
+# MAGIC 
+# MAGIC With your documents now converted to images, you can:
+# MAGIC 
+# MAGIC 1. **Vision Language Model Analysis**: Use models like GPT-4V, Claude Vision, or DALL-E to analyze document content
+# MAGIC 2. **Structured Data Extraction**: Extract tables, charts, and form data with visual understanding
+# MAGIC 3. **Document Classification**: Classify documents based on visual layout and content
+# MAGIC 4. **Quality Assessment**: Identify page quality, orientation, or scanning issues
+# MAGIC 5. **Multimodal RAG**: Combine visual and textual information for comprehensive document understanding
+# MAGIC 
+# MAGIC ### Performance Considerations
+# MAGIC 
+# MAGIC - **High Resolution Setting**: Enable `USE_HIGH_RESOLUTION=true` for detailed analysis but larger file sizes
+# MAGIC - **Partition Count**: Adjust `REPARTITION_COUNT` based on cluster size and document volume
+# MAGIC - **File Size Limits**: Modify `MAX_FILE_SIZE_MB` based on processing capacity and requirements
+# MAGIC 
+# MAGIC ### Error Handling and Monitoring
+# MAGIC 
+# MAGIC The pipeline includes robust error handling:
+# MAGIC - Individual page processing failures don't stop the entire batch
+# MAGIC - Large files are automatically skipped with warnings
+# MAGIC - Processing statistics are logged for monitoring
+# MAGIC - Memory management prevents cluster resource exhaustion
+# MAGIC 
+# MAGIC Continue to the next notebook in the series for VLM-based document analysis and extraction techniques.
