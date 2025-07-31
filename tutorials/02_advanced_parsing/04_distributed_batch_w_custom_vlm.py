@@ -16,8 +16,10 @@
 
 # COMMAND ----------
 
-# MAGIC #%pip install -U vllm==0.8.0 transformers==4.52.1 ray[data]==2.47.1 pillow==10.0.0 --quiet
-# MAGIC #%restart_python
+# COMMAND ----------
+
+# MAGIC %pip install -U vllm==0.8.0 transformers==4.52.1 ray[data]==2.47.1 pillow==10.0.0 python-dotenv --quiet
+# MAGIC %restart_python
 
 # COMMAND ----------
 
@@ -26,32 +28,56 @@
 
 # COMMAND ----------
 
+# Load environment variables from .env (if present) **before** we read them via os.getenv
+from dotenv import load_dotenv, find_dotenv
+_ = load_dotenv(find_dotenv())  # returns True if a .env is found and parsed
+
 # vLLM initialization config - FIXED for Ray compatibility
 import os
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 os.environ["VLLM_USE_V1"] = "1"  # Enable vLLM v1 for better vision model support
 os.environ["RAY_DISABLE_IMPORT_WARNING"] = "1"
 
-# Configuration - Parameterized for easy adjustment
-CATALOG = 'brian_gen_ai'
-SCHEMA = 'parsing_test'
-SOURCE_TABLE = 'document_page_docs'
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Runtime Configuration with Widgets
+# MAGIC 
+# MAGIC Configure the distributed processing parameters using widgets that default to environment variables.
 
-TEMP_VOLUME = 'ray_temp'
-OUTPUT_TABLE = 'parsed_markdown_pages'
-MODEL_NAME = 'nanonets/Nanonets-OCR-s'
+# COMMAND ----------
 
+# Create Databricks widgets for distributed processing configuration
+dbutils.widgets.text("catalog_name", os.getenv("CATALOG_NAME", "brian_gen_ai"), "Catalog Name")
+dbutils.widgets.text("schema_name", os.getenv("SCHEMA_NAME", "parsing_test"), "Schema Name")
+dbutils.widgets.text("source_table", os.getenv("SOURCE_TABLE", "document_page_docs"), "Source Table Name")
+dbutils.widgets.text("output_table", os.getenv("OUTPUT_TABLE", "parsed_markdown_pages"), "Output Table Name")
+dbutils.widgets.text("temp_volume", os.getenv("TEMP_VOLUME", "ray_temp"), "Temp Volume Name")
+dbutils.widgets.text("model_name", os.getenv("MODEL_NAME", "nanonets/Nanonets-OCR-s"), "Model Name")
+dbutils.widgets.dropdown("testing_mode", os.getenv("TESTING_MODE", "false"), ["true", "false"], "Testing Mode")
+
+# Read values from widgets
+CATALOG = dbutils.widgets.get("catalog_name")
+SCHEMA = dbutils.widgets.get("schema_name")
+SOURCE_TABLE = dbutils.widgets.get("source_table")
+OUTPUT_TABLE = dbutils.widgets.get("output_table")
+TEMP_VOLUME = dbutils.widgets.get("temp_volume")
+MODEL_NAME = dbutils.widgets.get("model_name")
+testing = dbutils.widgets.get("testing_mode").lower() == "true"
+
+# Set Ray temp directory
 os.environ['RAY_UC_VOLUMES_FUSE_TEMP_DIR'] = f'/Volumes/{CATALOG}/{SCHEMA}/{TEMP_VOLUME}'
-
-testing = False
 
 # Full table paths
 source_table_path = f"{CATALOG}.{SCHEMA}.{SOURCE_TABLE}"
 output_table_path = f"{CATALOG}.{SCHEMA}.{OUTPUT_TABLE}"
 
-print(f"Processing table: {source_table_path}")
-print(f"Output table: {output_table_path}")
-print(f"Using model: {MODEL_NAME}")
+print("=== Distributed Ray Processing Configuration ===")
+print(f"Source Table: {source_table_path}")
+print(f"Output Table: {output_table_path}")
+print(f"Model: {MODEL_NAME}")
+print(f"Temp Volume: /Volumes/{CATALOG}/{SCHEMA}/{TEMP_VOLUME}")
+print(f"Testing Mode: {testing}")
+print("=" * 50)
 
 # COMMAND ----------
 
