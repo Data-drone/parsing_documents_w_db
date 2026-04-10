@@ -22,8 +22,12 @@
 
 # COMMAND ----------
 
+import re
+
 current_user = spark.sql("SELECT current_user()").first()[0]
-username = current_user.split("@")[0].replace(".", "_")
+# Sanitize: keep only alphanumeric + underscore, strip leading digits
+username = re.sub(r"[^a-z0-9_]", "_", current_user.split("@")[0].lower()).strip("_")
+username = re.sub(r"^[0-9]+", "", username) or "user"
 
 dbutils.widgets.text("catalog_name", f"{username}_document_parsing", "Catalog")
 dbutils.widgets.text("schema_name", "tutorials", "Schema")
@@ -50,13 +54,13 @@ print(f"User:       {current_user}")
 
 # COMMAND ----------
 
-spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
+spark.sql(f"CREATE CATALOG IF NOT EXISTS `{CATALOG}`")
 print(f"Catalog '{CATALOG}' ready")
 
-spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{SCHEMA}`")
 print(f"Schema '{CATALOG}.{SCHEMA}' ready")
 
-spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{VOLUME}")
+spark.sql(f"CREATE VOLUME IF NOT EXISTS `{CATALOG}`.`{SCHEMA}`.`{VOLUME}`")
 print(f"Volume '{CATALOG}.{SCHEMA}.{VOLUME}' ready")
 
 print(f"\nVolume path: {VOLUME_PATH}")
@@ -144,7 +148,7 @@ else:
     print(f"  Catalog '{CATALOG}' NOT found")
 
 # Verify schema
-spark.sql(f"USE CATALOG {CATALOG}")
+spark.sql(f"USE CATALOG `{CATALOG}`")
 schemas = [r["databaseName"] for r in spark.sql("SHOW SCHEMAS").collect()]
 if SCHEMA in schemas:
     print(f"  Schema '{SCHEMA}' accessible")

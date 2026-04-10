@@ -33,13 +33,14 @@
 
 # COMMAND ----------
 
-import time, base64, io
+import time, base64, io, re
 from datetime import datetime
 from pyspark.sql.functions import col, lit, current_timestamp, expr, length
 from PIL import Image
 
 current_user = spark.sql("SELECT current_user()").first()[0]
-username = current_user.split("@")[0].replace(".", "_")
+username = re.sub(r"[^a-z0-9_]", "_", current_user.split("@")[0].lower()).strip("_")
+username = re.sub(r"^[0-9]+", "", username) or "user"
 
 dbutils.widgets.text("catalog_name", f"{username}_document_parsing", "Catalog")
 dbutils.widgets.text("schema_name", "tutorials", "Schema")
