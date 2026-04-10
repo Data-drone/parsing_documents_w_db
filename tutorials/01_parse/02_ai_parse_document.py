@@ -59,12 +59,18 @@ print(f"Demo:    {DEMO_MODE}")
 # COMMAND ----------
 
 # List files in volume first
-files = [f.name for f in dbutils.fs.ls(f"dbfs:{VOLUME_PATH}") if f.name.lower().endswith(".pdf")]
-if DEMO_MODE:
-    files = files[:2]
+all_files = [f.name for f in dbutils.fs.ls(f"dbfs:{VOLUME_PATH}") if f.name.lower().endswith(".pdf")]
+files = all_files[:2] if DEMO_MODE else all_files
 print(f"Files to parse: {len(files)}")
 for f in files:
     print(f"  {f}")
+
+# Build a glob filter for the selected files (used by READ_FILES)
+if DEMO_MODE and len(all_files) > 2:
+    # Create a path list for filtering in SQL later
+    file_filter_sql = ", ".join([f"'{VOLUME_PATH}/{f}'" for f in files])
+else:
+    file_filter_sql = None
 
 # COMMAND ----------
 
@@ -83,6 +89,9 @@ print("Running ai_parse_document...")
 start = time.time()
 
 # READ_FILES with binaryFile format gives us a 'content' BINARY column
+# Filter files first (before the expensive ai_parse_document call)
+filter_clause = f"WHERE path IN ({file_filter_sql})" if file_filter_sql else ""
+
 parsed_df = spark.sql(f"""
     SELECT
         path AS source_file,
@@ -90,11 +99,15 @@ parsed_df = spark.sql(f"""
             content,
             map('version', '2.0')
         ) AS parsed_result
-    FROM READ_FILES(
-        '{VOLUME_PATH}',
-        format => 'binaryFile',
-        pathGlobFilter => '*.pdf',
-        recursiveFileLookup => 'true'
+    FROM (
+        SELECT path, content
+        FROM READ_FILES(
+            '{VOLUME_PATH}',
+            format => 'binaryFile',
+            pathGlobFilter => '*.pdf',
+            recursiveFileLookup => 'true'
+        )
+        {filter_clause}
     )
 """)
 
@@ -163,8 +176,17 @@ print(f"Wrote {row_count} row(s) to {OUTPUT_TABLE}")
 
 # COMMAND ----------
 
-# Show the raw VARIANT for the first document
-display(parsed_df.select("source_file", "parsed_result").limit(2))
+# Show element type counts per document (raw VARIANT is too large to display directly)
+display(spark.sql("""
+    SELECT
+        source_file,
+        elem:type::STRING AS element_type,
+        COUNT(*) AS count
+    FROM parsed_results_temp
+    LATERAL VIEW explode(CAST(parsed_result:document:elements AS ARRAY<VARIANT>)) t AS elem
+    GROUP BY source_file, elem:type::STRING
+    ORDER BY source_file, count DESC
+"""))
 
 # COMMAND ----------
 
