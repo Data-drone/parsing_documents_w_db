@@ -67,17 +67,28 @@ print(f"Demo:    {DEMO_MODE}")
 
 # COMMAND ----------
 
-# Advanced converter: OCR + table structure detection enabled
-pipeline_options = PdfPipelineOptions(
+# File size threshold: files above this use a lighter pipeline to avoid OOM
+LARGE_FILE_MB = 5
+
+# Full pipeline: OCR + table structure detection
+full_pipeline = PdfPipelineOptions(
     do_ocr=True,
     do_table_structure=True,
 )
-
-converter = DocumentConverter(
-    format_options={"pdf": PdfFormatOption(pipeline_options=pipeline_options)}
+full_converter = DocumentConverter(
+    format_options={"pdf": PdfFormatOption(pipeline_options=full_pipeline)}
 )
 
-print("Docling converter ready (OCR + table structure enabled)")
+# Lightweight pipeline: no OCR, no table structure (fast, low memory)
+light_pipeline = PdfPipelineOptions(
+    do_ocr=False,
+    do_table_structure=False,
+)
+light_converter = DocumentConverter(
+    format_options={"pdf": PdfFormatOption(pipeline_options=light_pipeline)}
+)
+
+print(f"Docling converters ready (full pipeline for files < {LARGE_FILE_MB}MB, light for larger)")
 
 # COMMAND ----------
 
@@ -115,12 +126,21 @@ now = datetime.now()
 for pdf_file in pdf_files:
     fname = pdf_file.name
     fpath = f"{VOLUME_PATH}/{fname}"
+    size_mb = pdf_file.size / (1024 * 1024)
 
-    print(f"Processing: {fname}...", end=" ")
+    # Pick converter based on file size
+    if size_mb > LARGE_FILE_MB:
+        active_converter = light_converter
+        mode = "light"
+    else:
+        active_converter = full_converter
+        mode = "full"
+
+    print(f"Processing: {fname} ({size_mb:.1f}MB, {mode})...", end=" ")
     start = time.time()
 
     try:
-        result = converter.convert(fpath)
+        result = active_converter.convert(fpath)
         md = result.document.export_to_markdown()
         elapsed = time.time() - start
 

@@ -58,48 +58,44 @@ print(f"Demo:    {DEMO_MODE}")
 
 # COMMAND ----------
 
-files_df = (
-    spark.read.format("binaryFile")
-    .option("pathGlobFilter", "*.pdf")
-    .load(VOLUME_PATH)
-    .select(
-        col("path"),
-        col("length").alias("file_size_bytes"),
-    )
-    .withColumn("file_name", expr("element_at(split(path, '/'), -1)"))
-)
-
+# List files in volume first
+files = [f.name for f in dbutils.fs.ls(f"dbfs:{VOLUME_PATH}") if f.name.lower().endswith(".pdf")]
 if DEMO_MODE:
-    files_df = files_df.limit(2)
-
-file_count = files_df.count()
-print(f"Files to parse: {file_count}")
-display(files_df.select("file_name", "file_size_bytes"))
+    files = files[:2]
+print(f"Files to parse: {len(files)}")
+for f in files:
+    print(f"  {f}")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Parse with ai_parse_document
 # MAGIC
-# MAGIC The function returns a VARIANT column with an array of parsed elements.
-# MAGIC Each element has a `type` (e.g., "table", "figure", "text") and content.
+# MAGIC `ai_parse_document(content, options)` takes BINARY content (not a path string).
+# MAGIC We use `READ_FILES(path, format => 'binaryFile')` to read files as raw bytes,
+# MAGIC then pass the binary `content` column to the parsing function.
+# MAGIC
+# MAGIC Returns a VARIANT column with structured elements (text, tables, figures).
 
 # COMMAND ----------
 
-# Register files as temp view for SQL access
-files_df.createOrReplaceTempView("files_to_parse")
-
-print("Running ai_parse_document on each file...")
+print("Running ai_parse_document...")
 start = time.time()
 
-# ai_parse_document takes a file path and returns VARIANT
+# READ_FILES with binaryFile format gives us a 'content' BINARY column
 parsed_df = spark.sql(f"""
     SELECT
         path AS source_file,
-        file_name,
-        file_size_bytes,
-        ai_parse_document(path) AS parsed_result
-    FROM files_to_parse
+        ai_parse_document(
+            content,
+            map('version', '2.0')
+        ) AS parsed_result
+    FROM READ_FILES(
+        '{VOLUME_PATH}',
+        format => 'binaryFile',
+        pathGlobFilter => '*.pdf',
+        recursiveFileLookup => 'true'
+    )
 """)
 
 # Force evaluation
@@ -118,24 +114,40 @@ print(f"Parsed {parsed_count} file(s) in {elapsed:.1f}s")
 
 # COMMAND ----------
 
-# Extract text from VARIANT — concatenate all text elements
-# The VARIANT structure varies, so we cast the whole thing to string as parsed_text
-# and check for table elements
+# Register parsed results for SQL access
+parsed_df.createOrReplaceTempView("parsed_results_temp")
 
-result_df = parsed_df.selectExpr(
-    "source_file",
-    "file_name",
-    "CAST(NULL AS INT) AS page_number",
-    "CAST(parsed_result AS STRING) AS parsed_text",
-    """CASE
-        WHEN CAST(parsed_result AS STRING) LIKE '%table%' THEN true
-        ELSE false
-    END AS contains_tables""",
-    "'ai_parse_document' AS parse_method",
-    f"CAST({elapsed / max(parsed_count, 1):.3f} AS FLOAT) AS parse_duration_seconds",
-    "CAST(0.01 * file_size_bytes / 100000 AS FLOAT) AS estimated_cost_usd",  # rough estimate
-    "current_timestamp() AS parsed_at",
-)
+# Extract text from VARIANT: explode elements, concatenate text+table content per doc
+cost_per_doc = round(elapsed / max(parsed_count, 1), 3)
+result_df = spark.sql(f"""
+    WITH elements AS (
+        SELECT
+            source_file,
+            REGEXP_EXTRACT(source_file, '([^/]+)$', 1) AS file_name,
+            explode(CAST(parsed_result:document:elements AS ARRAY<VARIANT>)) AS elem
+        FROM parsed_results_temp
+    )
+    SELECT
+        source_file,
+        file_name,
+        CAST(NULL AS INT) AS page_number,
+        CONCAT_WS('\n\n',
+            COLLECT_LIST(CASE
+                WHEN elem:type::STRING IN ('text','title','section_header','caption')
+                THEN elem:content::STRING
+                WHEN elem:type::STRING = 'table'
+                THEN elem:content::STRING
+                ELSE NULL
+            END)
+        ) AS parsed_text,
+        MAX(CASE WHEN elem:type::STRING = 'table' THEN true ELSE false END) AS contains_tables,
+        'ai_parse_document' AS parse_method,
+        CAST({cost_per_doc} AS FLOAT) AS parse_duration_seconds,
+        CAST(0.01 AS FLOAT) AS estimated_cost_usd,
+        current_timestamp() AS parsed_at
+    FROM elements
+    GROUP BY source_file, file_name
+""")
 
 result_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(OUTPUT_TABLE)
 row_count = spark.table(OUTPUT_TABLE).count()
@@ -152,7 +164,7 @@ print(f"Wrote {row_count} row(s) to {OUTPUT_TABLE}")
 # COMMAND ----------
 
 # Show the raw VARIANT for the first document
-display(parsed_df.select("file_name", "parsed_result").limit(2))
+display(parsed_df.select("source_file", "parsed_result").limit(2))
 
 # COMMAND ----------
 
