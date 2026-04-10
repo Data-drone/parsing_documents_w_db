@@ -131,7 +131,7 @@ print(f"Parsed {parsed_count} file(s) in {elapsed:.1f}s")
 parsed_df.createOrReplaceTempView("parsed_results_temp")
 
 # Extract text from VARIANT: explode elements, concatenate text+table content per doc
-cost_per_doc = round(elapsed / max(parsed_count, 1), 3)
+duration_per_doc = round(elapsed / max(parsed_count, 1), 3)
 result_df = spark.sql(f"""
     WITH elements AS (
         SELECT
@@ -155,8 +155,7 @@ result_df = spark.sql(f"""
         ) AS parsed_text,
         MAX(CASE WHEN elem:type::STRING = 'table' THEN true ELSE false END) AS contains_tables,
         'ai_parse_document' AS parse_method,
-        CAST({cost_per_doc} AS FLOAT) AS parse_duration_seconds,
-        CAST(0.01 AS FLOAT) AS estimated_cost_usd,
+        CAST({duration_per_doc} AS FLOAT) AS parse_duration_seconds,
         current_timestamp() AS parsed_at
     FROM elements
     GROUP BY source_file, file_name
@@ -200,7 +199,6 @@ display(
         "file_name",
         "contains_tables",
         "parse_duration_seconds",
-        "estimated_cost_usd",
     )
 )
 

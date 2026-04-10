@@ -110,7 +110,6 @@ parser_df.select(
     "contains_tables",
     "parse_method",
     "parse_duration_seconds",
-    "estimated_cost_usd",
     "parsed_at",
 ).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(OUTPUT_TABLE)
 

@@ -10,14 +10,7 @@
 # MAGIC The model sees the actual page layout and extracts text with full visual
 # MAGIC context — tables, charts, handwriting, and complex formatting.
 # MAGIC
-# MAGIC ## Cost
-# MAGIC - Each page image ≈ 1–2K input tokens
-# MAGIC - Output ≈ 500–2K tokens per page
-# MAGIC - At Sonnet pricing: ~$0.01–0.03 per page
-# MAGIC - For 10K+ pages, consider self-hosted VLM (see advanced/)
-# MAGIC
 # MAGIC ## Limitations
-# MAGIC - Pay-per-call API cost
 # MAGIC - Rate limits on FMAPI endpoints
 # MAGIC - `failOnError` handling required for robust batch processing
 
@@ -156,9 +149,6 @@ print(f"Processed {result_count} page(s) in {elapsed:.1f}s")
 
 # COMMAND ----------
 
-# Estimate cost: ~$0.015 per page for Sonnet (rough)
-cost_per_page = 0.015
-
 result_df = parsed_df.select(
     col("source_file"),
     col("file_name"),
@@ -167,14 +157,12 @@ result_df = parsed_df.select(
     lit(False).alias("contains_tables"),
     lit("ai_query_vlm").alias("parse_method"),
     lit(round(elapsed / max(result_count, 1), 3)).cast("float").alias("parse_duration_seconds"),
-    lit(cost_per_page).cast("float").alias("estimated_cost_usd"),
     current_timestamp().alias("parsed_at"),
 )
 
 result_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(OUTPUT_TABLE)
 final_count = spark.table(OUTPUT_TABLE).count()
 print(f"Wrote {final_count} row(s) to {OUTPUT_TABLE}")
-print(f"Estimated total cost: ${final_count * cost_per_page:.2f}")
 
 # COMMAND ----------
 
@@ -188,7 +176,6 @@ display(
         "file_name",
         "page_number",
         "parse_duration_seconds",
-        "estimated_cost_usd",
     )
 )
 

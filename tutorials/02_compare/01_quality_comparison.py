@@ -8,7 +8,7 @@
 # MAGIC This is the centrepiece notebook. It compares all parsers you've run using
 # MAGIC two tiers of evaluation:
 # MAGIC
-# MAGIC 1. **Deterministic metrics** (always run) — text length, word count, timing, cost
+# MAGIC 1. **Deterministic metrics** (always run) — text length, word count, timing
 # MAGIC 2. **LLM-as-judge** (optional, selective) — send page image + parsed text to a
 # MAGIC    vision model for quality scoring
 # MAGIC
@@ -125,8 +125,6 @@ summary_df = (
         spark_round(avg("text_length"), 0).alias("avg_text_length"),
         spark_round(avg("word_count"), 0).alias("avg_word_count"),
         spark_round(avg("parse_duration_seconds"), 2).alias("avg_duration_s"),
-        spark_round(spark_sum("estimated_cost_usd"), 4).alias("total_cost_usd"),
-        spark_round(avg("estimated_cost_usd"), 4).alias("avg_cost_per_doc"),
         spark_sum(when(col("contains_tables"), 1).otherwise(0)).alias("docs_with_tables"),
     )
     .orderBy(desc("avg_text_length"))
@@ -149,7 +147,7 @@ per_doc_df = (
     metrics_df
     .select(
         "file_name", "parse_method", "text_length", "word_count",
-        "parse_duration_seconds", "estimated_cost_usd", "contains_tables",
+        "parse_duration_seconds", "contains_tables",
     )
     .orderBy("file_name", "parse_method")
 )
@@ -162,7 +160,7 @@ display(per_doc_df)
 # MAGIC ## Tier 2: LLM-as-Judge (Optional)
 # MAGIC
 # MAGIC If enabled, sends original page images + parsed text to a vision model
-# MAGIC for quality scoring. Only runs on a small sample to keep costs down.
+# MAGIC for quality scoring. Only runs on a small sample.
 # MAGIC
 # MAGIC Set the `Run LLM Judge` widget to `true` to enable.
 
@@ -279,7 +277,7 @@ else:
 metrics_df.select(
     "source_file", "file_name", "page_number", "parse_method",
     "text_length", "word_count", "contains_tables",
-    "parse_duration_seconds", "estimated_cost_usd", "parsed_at",
+    "parse_duration_seconds", "parsed_at",
 ).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(OUTPUT_TABLE)
 
 saved_count = spark.table(OUTPUT_TABLE).count()
@@ -306,10 +304,6 @@ if len(loaded) >= 2:
     # Find fastest parser
     best_speed = summary_df.orderBy("avg_duration_s").first()
     print(f"  Fastest:              {best_speed.parse_method} ({best_speed.avg_duration_s}s avg)")
-
-    # Find cheapest
-    best_cost = summary_df.orderBy("total_cost_usd").first()
-    print(f"  Cheapest:             {best_cost.parse_method} (${best_cost.total_cost_usd:.4f} total)")
 
     print()
     print("Next step: Run 02_compare/02_choose_and_export.py to export your preferred parser's output.")

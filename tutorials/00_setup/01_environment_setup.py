@@ -201,7 +201,7 @@ except Exception as e:
 # MAGIC ### Next steps
 # MAGIC 1. Run `00_setup/02_prepare_documents.py` to load PDFs into Delta tables and create page images
 # MAGIC 2. Then run any parser in `01_parse/` — they can be run independently:
-# MAGIC    - `01_pymupdf.py` — open source, CPU-only, zero cost
+# MAGIC    - `01_pymupdf.py` — open source, CPU-only
 # MAGIC    - `02_ai_parse_document.py` — native Databricks SQL
 # MAGIC    - `03_ai_query_vlm.py` — managed VLMs via FMAPI
 # MAGIC    - `04_docling.py` — open source with OCR + table detection

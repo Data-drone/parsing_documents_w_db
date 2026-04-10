@@ -155,7 +155,6 @@ for pdf_file in pdf_files:
             "contains_tables": has_tables,
             "parse_method": "docling",
             "parse_duration_seconds": round(elapsed, 3),
-            "estimated_cost_usd": 0.0,
             "parsed_at": now,
         })
         print(f"{len(md)} chars in {elapsed:.1f}s")
@@ -183,7 +182,6 @@ if results:
         StructField("contains_tables", BooleanType()),
         StructField("parse_method", StringType()),
         StructField("parse_duration_seconds", FloatType()),
-        StructField("estimated_cost_usd", FloatType()),
         StructField("parsed_at", TimestampType()),
     ])
 
@@ -206,7 +204,6 @@ if results:
             "file_name",
             "contains_tables",
             "parse_duration_seconds",
-            "estimated_cost_usd",
         )
     )
 

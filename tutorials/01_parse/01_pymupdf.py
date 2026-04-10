@@ -2,7 +2,7 @@
 # MAGIC %md
 # MAGIC # Parse with PyMuPDF4LLM
 # MAGIC
-# MAGIC **Type**: Open source, CPU-only, zero API cost
+# MAGIC **Type**: Open source, CPU-only
 # MAGIC **Best for**: Clean digital PDFs with text layers
 # MAGIC **Prerequisites**: Run `00_setup/02_prepare_documents` first
 # MAGIC
@@ -84,7 +84,6 @@ output_schema = StructType([
     StructField("contains_tables", BooleanType()),
     StructField("parse_method", StringType()),
     StructField("parse_duration_seconds", FloatType()),
-    StructField("estimated_cost_usd", FloatType()),
     StructField("parsed_at", TimestampType()),
 ])
 
@@ -120,7 +119,6 @@ def _pymupdf_batch(iterator):
                     "contains_tables": False,
                     "parse_method": "pymupdf",
                     "parse_duration_seconds": round(elapsed, 3),
-                    "estimated_cost_usd": 0.0,
                     "parsed_at": now,
                 })
             except Exception as e:
@@ -162,7 +160,6 @@ display(
     result_df.select(
         "file_name",
         "parse_duration_seconds",
-        "estimated_cost_usd",
     )
 )
 

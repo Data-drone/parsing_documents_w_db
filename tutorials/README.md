@@ -12,12 +12,12 @@ Compare different PDF parsing techniques on Databricks and find the best one for
 
 ## Parser Decision Matrix
 
-| Parser | Cost | Speed | Scanned PDFs | Tables | Best For |
-|--------|------|-------|-------------|--------|----------|
-| PyMuPDF | Free | Fast | No | No | Clean digital PDFs |
-| ai_parse_document | Per-page | Medium | Yes | Yes | General purpose, zero setup |
-| ai_query VLM | Per-token | Slow | Yes | Partial | Complex layouts, highest accuracy |
-| Docling | Free | Slow | Yes | Yes | Open-source with OCR + tables |
+| Parser | Speed | Scanned PDFs | Tables | Best For |
+|--------|-------|-------------|--------|----------|
+| PyMuPDF | Fast | No | No | Clean digital PDFs |
+| ai_parse_document | Medium | Yes | Yes | General purpose, zero setup |
+| ai_query VLM | Slow | Yes | Partial | Complex layouts, highest accuracy |
+| Docling | Slow | Yes | Yes | Open-source with OCR + tables |
 
 ## Structure
 
@@ -63,7 +63,6 @@ parsed_{method} (
   contains_tables BOOLEAN,
   parse_method STRING,
   parse_duration_seconds FLOAT,
-  estimated_cost_usd FLOAT,
   parsed_at TIMESTAMP
 )
 ```

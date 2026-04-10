@@ -4,7 +4,7 @@ Compare different PDF parsing techniques on Databricks and find the best one for
 
 ## What This Repo Does
 
-Runs the same set of PDFs through multiple parsers, measures quality and cost,
+Runs the same set of PDFs through multiple parsers, measures quality and timing,
 and helps you pick the right parser. All results use a standard output schema
 so comparison is automatic.
 
@@ -30,13 +30,13 @@ See [tutorials/README.md](tutorials/README.md) for the full structure and decisi
 
 ## Parser Options
 
-| Parser | Cost | Speed | Scanned PDFs | Tables | Best For |
-|--------|------|-------|-------------|--------|----------|
-| PyMuPDF | Free | Fast | No | No | Clean digital PDFs |
-| ai_parse_document | Per-page | Medium | Yes | Yes | General purpose, zero setup |
-| ai_query VLM | Per-token | Slow | Yes | Partial | Complex layouts, highest accuracy |
-| Docling | Free | Slow | Yes | Yes | Open-source with OCR + tables |
-| Self-hosted VLM | GPU cost | Fast at scale | Yes | Yes | High volume, cost control |
+| Parser | Speed | Scanned PDFs | Tables | Best For |
+|--------|-------|-------------|--------|----------|
+| PyMuPDF | Fast | No | No | Clean digital PDFs |
+| ai_parse_document | Medium | Yes | Yes | General purpose, zero setup |
+| ai_query VLM | Slow | Yes | Partial | Complex layouts, highest accuracy |
+| Docling | Slow | Yes | Yes | Open-source with OCR + tables |
+| Self-hosted VLM | Fast at scale | Yes | Yes | High volume |
 
 ## Requirements
 
