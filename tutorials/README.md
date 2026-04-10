@@ -1,90 +1,71 @@
-# Document Parsing Tutorial Path
+# Document Parsing Tutorials
 
-Welcome to the Databricks Document Parsing Tutorial! This tutorial series will guide you through building a complete document processing pipeline from scratch.
+Compare different PDF parsing techniques on Databricks and find the best one for your documents.
 
-## 🎯 Learning Path
+## Quick Start
 
-### 📚 Module 0: Setup (30 mins)
-**Goal**: Prepare your environment and understand the basics
+1. Run `00_setup/01_environment_setup.py` — create catalog, schema, volume, preflight checks
+2. Run `00_setup/02_prepare_documents.py` — load PDFs + create page images
+3. Run any parser(s) from `01_parse/` (they're independent — run one or all)
+4. Run `02_compare/01_quality_comparison.py` — compare results side by side
+5. Run `02_compare/02_choose_and_export.py` — pick a parser, export for downstream use
 
-- ✅ `00_setup/01_environment_setup.py` - Set up Unity Catalog, create volumes
-- ✅ `00_setup/02_verify_permissions.py` - Verify access to required resources
-- ✅ `00_setup/03_create_document_store.py` - Load PDFs into Delta tables
+## Parser Decision Matrix
 
-### 📚 Module 1: Foundations (2 hours)
-**Goal**: Learn the core concepts of document processing
+| Parser | Cost | Speed | Scanned PDFs | Tables | Best For |
+|--------|------|-------|-------------|--------|----------|
+| PyMuPDF | Free | Fast | No | No | Clean digital PDFs |
+| ai_parse_document | Per-page | Medium | Yes | Yes | General purpose, zero setup |
+| ai_query VLM | Per-token | Slow | Yes | Partial | Complex layouts, highest accuracy |
+| Docling | Free | Slow | Yes | Yes | Open-source with OCR + tables |
 
-- 📄 `01_foundations/01_basic_pdf_parsing.py` - Extract text using PyMuPDF
-- 📄 `01_foundations/02_exploring_llm_parsing.py` - Explore LLM capabilities for parsing
-- 📄 `01_foundations/03_create_summaries.py` - Generate document summaries with LLMs
-
-### 📚 Module 2: Advanced Parsing (3 hours)
-**Goal**: Master advanced parsing techniques
-
-- 🖼️ `02_advanced_parsing/01_split_to_images.py` - Convert PDFs to images
-- 🔍 `02_advanced_parsing/02_ocr_parsing.py` - Extract text using OCR
-- 🤖 `02_advanced_parsing/03_vlm_parsing.py` - Parse with Vision Language Models
-- ⚡ `02_advanced_parsing/04_distributed_ray.py` - Scale with Ray on GPU clusters
-- 🔌 `02_advanced_parsing/05_parsing_with_openai_api.py` - Use OpenAI-compatible APIs
-- 🎯 `02_advanced_parsing/06_parsing_with_nanonets.py` - Specialized OCR models
-
-### 📚 Module 3: Vector Search (2 hours)
-**Goal**: Build semantic search capabilities
-
-- 🧮 `03_vector_search/01_create_page_index.py` - Index individual pages
-- 📊 `03_vector_search/02_create_summary_index.py` - Index document summaries
-
-### 📚 Module 4: Production (3 hours)
-**Goal**: Deploy production-ready solutions
-
-- 🚀 `04_production_examples/01_deploy_llm_server.py` - Deploy vLLM server
-- 🔗 `04_production_examples/02_build_rag_chain.py` - Build RAG application
-- 📦 `04_production_examples/03_deploy_model.py` - Deploy as MLflow model
-
-## 🛠️ Production Workflows
-
-After completing the tutorials, you can run production workflows using Databricks bundles:
-
-```bash
-# Run basic parsing pipeline
-databricks bundle run basic_parsing_pipeline
-
-# Run OCR pipeline with image extraction
-databricks bundle run ocr_pipeline
-
-# Run complete pipeline with vector indexing
-databricks bundle run full_pipeline
-```
-
-## 📁 Project Structure
+## Structure
 
 ```
 tutorials/
-├── 00_setup/           # Environment preparation
-├── 01_foundations/     # Core concepts
-├── 02_advanced_parsing/# Advanced techniques
-├── 03_vector_search/   # Search capabilities
-└── 04_production_examples/ # Production deployment
+├── 00_setup/
+│   ├── 01_environment_setup.py     # Catalog, schema, volume, preflight
+│   └── 02_prepare_documents.py     # Load PDFs + split to page images
+│
+├── 01_parse/
+│   ├── 01_pymupdf.py               # Open source, CPU, free
+│   ├── 02_ai_parse_document.py     # Native Databricks SQL
+│   ├── 03_ai_query_vlm.py          # Managed VLMs (Claude, Gemini)
+│   └── 04_docling.py               # Open source + OCR + tables
+│
+├── 02_compare/
+│   ├── 01_quality_comparison.py    # Metrics + optional LLM judge
+│   └── 02_choose_and_export.py     # Pick parser, export results
+│
+└── advanced/
+    └── self_hosted_vlm/            # GPU cluster required
+        ├── 01_deploy_vllm_server.py
+        ├── 02_query_vlm_server.py
+        └── 03_distributed_batch_ray.py
 ```
 
-## 🚀 Getting Started
+## Requirements
 
-1. Start with Module 0 to set up your environment
-2. Work through each module in order
-3. Each notebook is self-contained with its own dependencies
-4. Run notebooks on appropriate clusters (CPU for basic, GPU for advanced)
+- Databricks workspace with Unity Catalog
+- DBR 17.1+ (for ai_parse_document)
+- CPU cluster for PyMuPDF and Docling
+- FMAPI access for ai_query VLM
+- GPU cluster only needed for advanced/self_hosted_vlm
 
-## 💡 Tips
+## All Parsers Write the Same Schema
 
-- Each notebook includes `%pip install` for required dependencies
-- Use widgets to parameterize catalog/schema names
-- Check notebook headers for cluster requirements
-- Refer to `docs/dependencies.md` for library versions
+```sql
+parsed_{method} (
+  source_file STRING,
+  file_name STRING,
+  page_number INT,
+  parsed_text STRING,
+  contains_tables BOOLEAN,
+  parse_method STRING,
+  parse_duration_seconds FLOAT,
+  estimated_cost_usd FLOAT,
+  parsed_at TIMESTAMP
+)
+```
 
-## 📚 Additional Resources
-
-- [Databricks Vector Search Documentation](https://docs.databricks.com/en/generative-ai/vector-search.html)
-- [MLflow Documentation](https://mlflow.org/)
-- [Ray on Databricks](https://docs.databricks.com/en/machine-learning/ray-integration.html)
-
-Happy Learning! 🎉 
+This makes the comparison notebook work automatically with any combination of parsers.
