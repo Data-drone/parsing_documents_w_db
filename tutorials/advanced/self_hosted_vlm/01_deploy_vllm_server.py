@@ -2,48 +2,52 @@
 # MAGIC %md
 # MAGIC # Custom VLM Server Setup
 # MAGIC
-# MAGIC This notebook sets up a custom Vision Language Model (VLM) server using vLLM to serve the Nanonets OCR model. This server can then be queried by other notebooks for distributed document processing.
+# MAGIC This notebook sets up a VLM server using vLLM to serve dots.ocr for document parsing.
+# MAGIC The server can then be queried by other notebooks via OpenAI-compatible API.
 # MAGIC
 # MAGIC ## Overview
-# MAGIC - **Purpose**: Start a local vLLM server for custom VLM processing
-# MAGIC - **Model**: Nanonets OCR model optimized for document text extraction
-# MAGIC - **Benefits**: Local control, custom parameters, optimized for your use case
+# MAGIC - **Purpose**: Start a local vLLM server for self-hosted document OCR
+# MAGIC - **Model**: dots.ocr (3B params, SOTA on OmniDocBench, 100+ languages, MIT license)
+# MAGIC - **Benefits**: No per-call API fees, full control, GPU-local inference
+# MAGIC
+# MAGIC ## Requirements
+# MAGIC - GPU cluster (A10 24GB+ recommended — model is ~6GB in bf16)
+# MAGIC - DBR with CUDA 12.4+ (check `nvidia-smi` on your cluster)
+# MAGIC
+# MAGIC ## Alternative models (change via widget)
+# MAGIC - `Qwen/Qwen3-VL-8B-Instruct` — general VLM, 256K context, 32 languages
+# MAGIC - `tiiuae/Falcon-OCR` — 300M params, fast, great on tables
+# MAGIC - `ibm-granite/granite-4.0-3b-vision` — enterprise KVP/table extraction
 # MAGIC
 # MAGIC ## Configuration
-# MAGIC This notebook uses **Databricks widgets** for runtime configuration, following the same pattern as our other tutorials.
+# MAGIC This notebook uses **Databricks widgets** for runtime configuration.
 
 # COMMAND ----------
 
-# MAGIC %pip install -U vllm==0.8.0 transformers==4.52.1 python-dotenv --quiet
+# MAGIC %pip install -U "vllm>=0.9.1" "transformers>=4.52.0" --quiet
 # MAGIC %restart_python
 
 # COMMAND ----------
-
-# Load environment variables from .env (if present) **before** we read them via os.getenv
-from dotenv import load_dotenv, find_dotenv
-_ = load_dotenv(find_dotenv())  # returns True if a .env is found and parsed
 
 import os
 
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Runtime Configuration with Widgets
-# MAGIC 
-# MAGIC Configure the VLM server parameters using widgets that default to environment variables.
+# MAGIC
+# MAGIC Configure the VLM server parameters using widgets.
 
 # COMMAND ----------
 
-# vLLM initialization config - FIXED for better compatibility
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
-# Create Databricks widgets for VLM server configuration
-dbutils.widgets.text("model_name", os.getenv("VLM_MODEL_NAME", "nanonets/Nanonets-OCR-s"), "Model Name")
-dbutils.widgets.text("max_num_batched_tokens", os.getenv("VLM_MAX_BATCHED_TOKENS", "16384"), "Max Batched Tokens")
-dbutils.widgets.text("max_num_seqs", os.getenv("VLM_MAX_NUM_SEQS", "16"), "Max Number of Sequences")
-dbutils.widgets.text("max_model_len", os.getenv("VLM_MAX_MODEL_LEN", "8192"), "Max Model Length")
-dbutils.widgets.text("gpu_memory_utilization", os.getenv("VLM_GPU_MEMORY_UTIL", "0.85"), "GPU Memory Utilization")
-dbutils.widgets.text("swap_space", os.getenv("VLM_SWAP_SPACE", "8"), "Swap Space (GB)")
-dbutils.widgets.text("server_port", os.getenv("VLM_SERVER_PORT", "8000"), "Server Port")
+dbutils.widgets.text("model_name", "rednote-hilab/dots.ocr", "Model Name")
+dbutils.widgets.text("max_num_batched_tokens", "16384", "Max Batched Tokens")
+dbutils.widgets.text("max_num_seqs", "16", "Max Number of Sequences")
+dbutils.widgets.text("max_model_len", "16384", "Max Model Length")
+dbutils.widgets.text("gpu_memory_utilization", "0.90", "GPU Memory Utilization")
+dbutils.widgets.text("swap_space", "8", "Swap Space (GB)")
+dbutils.widgets.text("server_port", "8000", "Server Port")
 
 # Read values from widgets
 MODEL_NAME = dbutils.widgets.get("model_name")
@@ -67,27 +71,28 @@ print("=" * 45)
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Start VLM Server
-# MAGIC 
-# MAGIC Launch the vLLM server with the configured parameters. This server will be available for other notebooks to query.
+# MAGIC
+# MAGIC Launch the vLLM server with the configured parameters. The server exposes an
+# MAGIC OpenAI-compatible API at `http://localhost:{port}/v1`.
 
 # COMMAND ----------
 
-# Construct the vLLM serve command with configured parameters
 vllm_command = f"""vllm serve {MODEL_NAME} \\
   --max-num-batched-tokens {MAX_BATCHED_TOKENS} \\
   --max-num-seqs {MAX_NUM_SEQS} \\
   --max-model-len {MAX_MODEL_LEN} \\
-  --limit-mm-per-prompt "image=1" \\
+  --limit-mm-per-prompt "image=1,video=0" \\
   --gpu-memory-utilization {GPU_MEMORY_UTIL} \\
   --enable-chunked-prefill \\
   --kv-cache-dtype auto \\
   --swap-space {SWAP_SPACE} \\
   --port {SERVER_PORT} \\
-  --served-model-name "{MODEL_NAME}" """
+  --served-model-name "{MODEL_NAME}" \\
+  --async-scheduling"""
 
-print("🚀 Starting VLM Server with command:")
+print("Starting VLM Server with command:")
 print(vllm_command)
-print("\n⏳ Server will start in the next cell...")
+print("\nServer will start in the next cell...")
 
 # COMMAND ----------
 
@@ -95,10 +100,11 @@ print("\n⏳ Server will start in the next cell...")
   --max-num-batched-tokens {MAX_BATCHED_TOKENS} \
   --max-num-seqs {MAX_NUM_SEQS} \
   --max-model-len {MAX_MODEL_LEN} \
-  --limit-mm-per-prompt "image=1" \
+  --limit-mm-per-prompt "image=1,video=0" \
   --gpu-memory-utilization {GPU_MEMORY_UTIL} \
   --enable-chunked-prefill \
   --kv-cache-dtype auto \
   --swap-space {SWAP_SPACE} \
   --port {SERVER_PORT} \
-  --served-model-name "{MODEL_NAME}"
+  --served-model-name "{MODEL_NAME}" \
+  --async-scheduling

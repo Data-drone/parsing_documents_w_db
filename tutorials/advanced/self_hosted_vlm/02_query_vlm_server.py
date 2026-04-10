@@ -1,37 +1,26 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Simple Remote VLM Server Processing
-# MAGIC 
-# MAGIC This notebook demonstrates a simplified approach to querying remote Vision Language Model (VLM) servers that are compatible with the OpenAI API specification.
-# MAGIC 
-# MAGIC ## Key Features for Remote Servers
-# MAGIC - **Simple rate limiting**: Basic exponential backoff for 429 errors
-# MAGIC - **Fixed concurrency**: Configurable worker count without complex adaptation
-# MAGIC - **Retry logic**: Automatic retries for failed requests with backoff
-# MAGIC - **Timeout handling**: Proper connection and read timeouts
-# MAGIC - **Image optimization**: Efficient image encoding for network transmission
-# MAGIC 
-# MAGIC ## Simplified from Original
-# MAGIC - Removed complex adaptive concurrency management
-# MAGIC - Removed detailed metrics tracking and server performance analysis
-# MAGIC - Removed dynamic worker adjustment based on response times
-# MAGIC - Simplified configuration to essential parameters only
-# MAGIC 
-# MAGIC ## Setup
-# MAGIC 
-# MAGIC 1. Install required packages (including python-dotenv for environment config)
-# MAGIC 2. Set up the OpenAI API key and configuration
+# MAGIC # Query Self-Hosted VLM Server
+# MAGIC
+# MAGIC Query a vLLM server (started by `01_deploy_vllm_server.py`) for document OCR.
+# MAGIC The server exposes an OpenAI-compatible API that this notebook calls with page images.
+# MAGIC
+# MAGIC ## Features
+# MAGIC - Concurrent requests with configurable worker count
+# MAGIC - Exponential backoff for rate limiting (429 errors)
+# MAGIC - Automatic retries with timeout handling
+# MAGIC - Image optimization for network transmission
+# MAGIC
+# MAGIC ## Prerequisites
+# MAGIC 1. Run `01_deploy_vllm_server.py` on a GPU cluster (server must be running)
+# MAGIC 2. Have page images in a source table (from `00_setup/02_prepare_documents`)
 
 # COMMAND ----------
 
-%pip install python-dotenv Pillow
+%pip install Pillow
 %restart_python
 
 # COMMAND ----------
-
-# Load environment variables from .env (if present) **before** we read them via os.getenv
-from dotenv import load_dotenv, find_dotenv
-_ = load_dotenv(find_dotenv())  # returns True if a .env is found and parsed
 
 import os
 import io
@@ -53,31 +42,28 @@ from PIL import Image
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Runtime Configuration with Widgets
-# MAGIC 
-# MAGIC Following the same pattern as our foundation tutorials, we use Databricks widgets to allow runtime configuration while defaulting to environment variables. This provides flexibility for different users and environments.
 
 # COMMAND ----------
 
-# -----------------------------------------------------------------------------
-# Runtime configuration via widgets
-# -----------------------------------------------------------------------------
-# Pull defaults from environment variables (populated via `.env` or workspace)
+import re
 
-# Create Databricks widgets for Unity Catalog configuration
-dbutils.widgets.text("catalog_name", os.getenv("CATALOG_NAME", "brian_gen_ai"), "Catalog Name")
-dbutils.widgets.text("schema_name", os.getenv("SCHEMA_NAME", "parsing_test"), "Schema Name")
-dbutils.widgets.text("source_table", os.getenv("SOURCE_TABLE", "document_page_docs"), "Source Table Name")
-dbutils.widgets.text("output_table", os.getenv("OUTPUT_TABLE", "document_store_ocr"), "Output Table Name")
+current_user = spark.sql("SELECT current_user()").first()[0]
+username = re.sub(r"[^a-z0-9_]", "_", current_user.split("@")[0].lower()).strip("_")
+username = re.sub(r"^[0-9]+", "", username) or "user"
 
-# OpenAI API Configuration
-dbutils.widgets.text("openai_api_url", os.getenv("OPENAI_API_URL", "http://localhost:8000/v1"), "OpenAI API URL")
-dbutils.widgets.password("openai_api_key", "openai_api_key", os.getenv("OPENAI_API_KEY", ""), "OpenAI API Key")
-dbutils.widgets.text("openai_model_name", os.getenv("OPENAI_MODEL_NAME", "nanonets/Nanonets-OCR-s"), "OpenAI Model Name")
-dbutils.widgets.text("openai_max_tokens", os.getenv("OPENAI_MAX_TOKENS", "4096"), "Max Tokens")
-dbutils.widgets.text("openai_temperature", os.getenv("OPENAI_TEMPERATURE", "0.0"), "Temperature")
+dbutils.widgets.text("catalog_name", f"{username}_document_parsing", "Catalog Name")
+dbutils.widgets.text("schema_name", "tutorials", "Schema Name")
+dbutils.widgets.text("source_table", "document_page_images", "Source Table Name")
+dbutils.widgets.text("output_table", "parsed_self_hosted_vlm", "Output Table Name")
 
-# Simple Concurrency Configuration
-dbutils.widgets.text("max_workers", os.getenv("MAX_WORKERS", "8"), "Max Workers")
+# OpenAI API Configuration (vLLM exposes OpenAI-compatible API)
+dbutils.widgets.text("openai_api_url", "http://localhost:8000/v1", "VLM Server URL")
+dbutils.widgets.text("openai_api_key", "dummy", "API Key (any value for local vLLM)")
+dbutils.widgets.text("openai_model_name", "rednote-hilab/dots.ocr", "Model Name")
+dbutils.widgets.text("openai_max_tokens", "4096", "Max Tokens")
+dbutils.widgets.text("openai_temperature", "0.0", "Temperature")
+
+dbutils.widgets.text("max_workers", "8", "Max Workers")
 
 # Read values back from the widgets
 CATALOG = dbutils.widgets.get("catalog_name")
@@ -110,67 +96,21 @@ print(f"Max Workers: {MAX_WORKERS}")
 print("=" * 55)
 
 # COMMAND ----------
+
 # MAGIC %md
-# MAGIC ### 🔍 Configuration Verification
-# MAGIC 
-# MAGIC Let's verify that our configuration is correct and the source table contains processable page images.
+# MAGIC ## Verify Source Table
 
 # COMMAND ----------
 
-# Verify source table exists and contains page images
 try:
-    # Check if source table exists and get basic stats
-    table_info = spark.sql(f"DESCRIBE TABLE EXTENDED {SOURCE_TABLE_FULL}")
-    print("✅ Source table exists")
-    
-    # Get page image counts and metadata
-    page_stats = spark.sql(f"""
-        SELECT 
-            COUNT(*) as total_pages,
-            COUNT(CASE WHEN page_image_png IS NOT NULL THEN 1 END) as pages_with_images,
-            COUNT(DISTINCT doc_id) as unique_documents,
-            ROUND(AVG(LENGTH(page_image_png))/1024/1024, 2) as avg_image_size_mb
-        FROM {SOURCE_TABLE_FULL}
-        WHERE page_image_png IS NOT NULL
-    """).collect()[0]
-    
-    print(f"📊 Source Data Statistics:")
-    print(f"   📄 Total pages: {page_stats.total_pages:,}")
-    print(f"   🖼️ Pages with images: {page_stats.pages_with_images:,}")
-    print(f"   📚 Unique documents: {page_stats.unique_documents:,}")
-    print(f"   💾 Average image size: {page_stats.avg_image_size_mb:.2f} MB")
-    
-    if page_stats.pages_with_images == 0:
-        print("⚠️ No pages with images found. Please ensure page images are available in the source table.")
-        print("   This notebook requires the output from '01_split_to_images.py' tutorial.")
-    else:
-        # Show sample of first few documents for verification
-        sample_docs = spark.sql(f"""
-            SELECT doc_id, COUNT(*) as page_count
-            FROM {SOURCE_TABLE_FULL}
-            WHERE page_image_png IS NOT NULL
-            GROUP BY doc_id
-            ORDER BY doc_id
-            LIMIT 3
-        """).collect()
-        
-        print(f"\n🎯 Sample documents to be processed:")
-        for doc in sample_docs:
-            print(f"   📑 {doc.doc_id}: {doc.page_count} pages")
-            
-    # Check API configuration
-    if not OPENAI_API_KEY:
-        print("⚠️ OpenAI API key is not configured. Please set the OPENAI_API_KEY widget or environment variable.")
-    else:
-        print("✅ OpenAI API key is configured")
-        
-    print(f"🌐 API Endpoint: {OPENAI_API_URL}")
-    print(f"🤖 Model: {OPENAI_MODEL_NAME}")
-    
+    page_count = spark.table(SOURCE_TABLE_FULL).filter("page_image_png IS NOT NULL").count()
+    print(f"Source table: {SOURCE_TABLE_FULL}")
+    print(f"Pages with images: {page_count}")
+    if page_count == 0:
+        print("No page images found. Run 00_setup/02_prepare_documents first.")
 except Exception as e:
-    print(f"❌ Error accessing source table: {e}")
-    print("Please check your catalog, schema, and table configuration.")
-    print("Make sure you've run the '01_split_to_images.py' tutorial first to create page images.")
+    print(f"Error: {e}")
+    print("Run 00_setup/02_prepare_documents first to create page images.")
 
 # COMMAND ----------
 # MAGIC %md
@@ -191,14 +131,14 @@ class SimpleVLMConfig:
                  max_workers=None):
         
         # API Configuration
-        self.api_url = api_url or os.getenv("OPENAI_API_URL", "http://localhost:8000/v1")
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
-        self.model_name = model_name or os.getenv("OPENAI_MODEL_NAME", "nanonets/Nanonets-OCR-s")
-        self.max_tokens = max_tokens or int(os.getenv("OPENAI_MAX_TOKENS", "4096"))
-        self.temperature = temperature or float(os.getenv("OPENAI_TEMPERATURE", "0.0"))
+        self.api_url = api_url or "http://localhost:8000/v1"
+        self.api_key = api_key or "dummy"
+        self.model_name = model_name or "rednote-hilab/dots.ocr"
+        self.max_tokens = max_tokens or 4096
+        self.temperature = temperature if temperature is not None else 0.0
         
         # Simple concurrency and retry settings
-        self.max_workers = max_workers or int(os.getenv("MAX_WORKERS", "8"))
+        self.max_workers = max_workers or 8
         self.base_delay = 0.1  # 100ms base delay between requests
         self.max_retries = 3
         self.timeout = (10, 60)  # (connect, read) timeouts

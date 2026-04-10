@@ -1,24 +1,21 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC
-# MAGIC # Scaling up Image-to-Markdown Parsing with Nanonets OCR Model using vLLM + Ray Data
+# MAGIC # Distributed Batch OCR with vLLM + Ray Data
 # MAGIC
-# MAGIC This notebook demonstrates how to:
-# MAGIC - Read image data from a parameterized Spark Delta table
-# MAGIC - Process base64 encoded images using vLLM + Ray Data with native Spark integration
-# MAGIC - Generate markdown output using the Nanonets OCR model
-# MAGIC - Scale efficiently across multiple GPUs using Ray Data's distributed processing
-# MAGIC - Access Ray Dashboard for monitoring and debugging
-# MAGIC - Handle preprocessing errors gracefully to prevent ChatTemplate failures
-# MAGIC - **Fixed**: Binary PNG data serialization issues with Arrow
-# MAGIC - **Fixed**: vLLM parameter conflicts with Ray
-# MAGIC - **Fixed**: Multiprocessing signal handling conflicts
+# MAGIC Scale document OCR across multiple GPUs using vLLM + Ray Data.
+# MAGIC
+# MAGIC ## What it does
+# MAGIC - Reads page images from a Spark Delta table
+# MAGIC - Processes images through dots.ocr (or any vLLM-compatible VLM) via Ray Data
+# MAGIC - Writes parsed markdown back to a Delta table
+# MAGIC - Scales across multiple GPUs with Ray's distributed processing
 
 # COMMAND ----------
 
 # COMMAND ----------
 
-# MAGIC %pip install -U vllm==0.8.0 transformers==4.52.1 ray[data]==2.47.1 pillow==10.0.0 python-dotenv --quiet
+# MAGIC %pip install -U "vllm>=0.9.1" "transformers>=4.52.0" "ray[data]>=2.47.1" pillow --quiet
 # MAGIC %restart_python
 
 # COMMAND ----------
@@ -28,11 +25,6 @@
 
 # COMMAND ----------
 
-# Load environment variables from .env (if present) **before** we read them via os.getenv
-from dotenv import load_dotenv, find_dotenv
-_ = load_dotenv(find_dotenv())  # returns True if a .env is found and parsed
-
-# vLLM initialization config - FIXED for Ray compatibility
 import os
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 os.environ["VLLM_USE_V1"] = "1"  # Enable vLLM v1 for better vision model support
@@ -46,14 +38,19 @@ os.environ["RAY_DISABLE_IMPORT_WARNING"] = "1"
 
 # COMMAND ----------
 
-# Create Databricks widgets for distributed processing configuration
-dbutils.widgets.text("catalog_name", os.getenv("CATALOG_NAME", "brian_gen_ai"), "Catalog Name")
-dbutils.widgets.text("schema_name", os.getenv("SCHEMA_NAME", "parsing_test"), "Schema Name")
-dbutils.widgets.text("source_table", os.getenv("SOURCE_TABLE", "document_page_docs"), "Source Table Name")
-dbutils.widgets.text("output_table", os.getenv("OUTPUT_TABLE", "parsed_markdown_pages"), "Output Table Name")
-dbutils.widgets.text("temp_volume", os.getenv("TEMP_VOLUME", "ray_temp"), "Temp Volume Name")
-dbutils.widgets.text("model_name", os.getenv("MODEL_NAME", "nanonets/Nanonets-OCR-s"), "Model Name")
-dbutils.widgets.dropdown("testing_mode", os.getenv("TESTING_MODE", "false"), ["true", "false"], "Testing Mode")
+import re
+
+current_user = spark.sql("SELECT current_user()").first()[0]
+username = re.sub(r"[^a-z0-9_]", "_", current_user.split("@")[0].lower()).strip("_")
+username = re.sub(r"^[0-9]+", "", username) or "user"
+
+dbutils.widgets.text("catalog_name", f"{username}_document_parsing", "Catalog Name")
+dbutils.widgets.text("schema_name", "tutorials", "Schema Name")
+dbutils.widgets.text("source_table", "document_page_images", "Source Table Name")
+dbutils.widgets.text("output_table", "parsed_self_hosted_vlm_ray", "Output Table Name")
+dbutils.widgets.text("temp_volume", "ray_temp", "Temp Volume Name")
+dbutils.widgets.text("model_name", "rednote-hilab/dots.ocr", "Model Name")
+dbutils.widgets.dropdown("testing_mode", "true", ["true", "false"], "Testing Mode")
 
 # Read values from widgets
 CATALOG = dbutils.widgets.get("catalog_name")
@@ -179,7 +176,7 @@ print(f"Dataset count: {ray_dataset.count()}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Configure vLLM Engine for Nanonets OCR - FIXED
+# MAGIC ## Configure vLLM Engine
 
 # COMMAND ----------
 
@@ -187,7 +184,7 @@ print(f"Dataset count: {ray_dataset.count()}")
 vllm_config = vLLMEngineProcessorConfig(
         model_source=MODEL_NAME,
         engine_kwargs={
-            "max_model_len": 8192,
+            "max_model_len": 16384,
             "enable_chunked_prefill": True,
             "max_num_batched_tokens": 24576,  # Optimized for better GPU utilization
             "max_num_seqs": 16,               # Increased for better batching
