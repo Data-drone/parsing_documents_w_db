@@ -326,6 +326,7 @@ def run_test(td, md):
 
 def score_candidate(cand_dir, tests):
     type_scores = defaultdict(list)
+    cat_scores = defaultdict(list)
     tp, tot, missing = 0, 0, 0
     for t in tests:
         pdf_ref = t["pdf"]
@@ -337,6 +338,7 @@ def score_candidate(cand_dir, tests):
         out_path = os.path.join(cand_dir, cat, f"{base}_pg{pg}_repeat1.md")
         if not os.path.exists(out_path):
             type_scores[t["type"]].append(0.0)
+            cat_scores[cat].append(0.0)
             tot += 1
             missing += 1
             continue
@@ -345,25 +347,35 @@ def score_candidate(cand_dir, tests):
         passed, _ = run_test(t, md)
         s = 1.0 if passed else 0.0
         type_scores[t["type"]].append(s)
+        cat_scores[cat].append(s)
         tp += s
         tot += 1
-    results = {}
+    by_type = {}
     for tt, scores in sorted(type_scores.items()):
-        results[tt] = {"score": round(sum(scores)/len(scores)*100, 1), "count": len(scores)}
+        by_type[tt] = {"score": round(sum(scores)/len(scores)*100, 1), "count": len(scores)}
+    by_category = {}
+    for cc, scores in sorted(cat_scores.items()):
+        by_category[cc] = {"score": round(sum(scores)/len(scores)*100, 1), "count": len(scores)}
     overall = round(tp/tot*100, 1) if tot else 0
-    return {"overall": overall, "total_tests": tot, "total_pass": int(tp), "missing_files": missing, "by_type": results}
+    return {"overall": overall, "total_tests": tot, "total_pass": int(tp), "missing_files": missing, "by_type": by_type, "by_category": by_category}
 
 print("Scoring ai_parse_document...")
 ais = score_candidate(ai_output_dir, filtered_tests)
 print(f"  Overall: {ais['overall']}%")
 print(f"  {ais['total_pass']}/{ais['total_tests']} passed, {ais['missing_files']} missing")
 
+print("\n  By test type:")
 for tt, data in sorted(ais["by_type"].items()):
-    print(f"  {tt}: {data['score']}% ({data['count']} tests)")
+    print(f"    {tt}: {data['score']}% ({data['count']} tests)")
+
+print("\n  By PDF category:")
+for cc, data in sorted(ais["by_category"].items()):
+    print(f"    {cc}: {data['score']}% ({data['count']} tests)")
 
 # Save
 with open(os.path.join(RESULTS_DIR, "ai_parse_results.json"), "w") as f:
     json.dump(ais, f, indent=2)
 
 dbutils.notebook.exit(json.dumps({"ai_parse": ais["overall"], "pass": ais["total_pass"],
-                                   "tests": ais["total_tests"], "missing": ais["missing_files"]}))
+                                   "tests": ais["total_tests"], "missing": ais["missing_files"],
+                                   "by_category": {c: d["score"] for c, d in ais["by_category"].items()}}))
