@@ -203,14 +203,21 @@ for idx, pdf_ref in enumerate(sorted(selected_pdfs)):
             page_texts[pg].append(content)
 
         if not page_texts:
-            # ai_parse returned no elements — write empty page 1 file
             ai_errors.append(f"{pdf_ref}: no elements returned")
-            with open(os.path.join(out_dir, f"{base}_pg1_repeat1.md"), "w") as f:
-                f.write("")
-            continue
 
-        for pg, texts in page_texts.items():
-            md = "\n\n".join(texts)
+        # Always use PdfReader to get total page count, then write a file
+        # for every page — empty if ai_parse didn't return elements for it.
+        try:
+            reader = PdfReader(vol_path)
+            total_pages = len(reader.pages)
+        except Exception:
+            total_pages = max(page_texts.keys()) if page_texts else 1
+
+        for pg in range(1, total_pages + 1):
+            if pg in page_texts:
+                md = "\n\n".join(page_texts[pg])
+            else:
+                md = ""
             with open(os.path.join(out_dir, f"{base}_pg{pg}_repeat1.md"), "w") as f:
                 f.write(md)
             ai_count += 1
